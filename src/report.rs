@@ -42,7 +42,10 @@ pub fn status_report(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result
         let phase = match state.phase(now) {
             Phase::Idle => continue,
             Phase::Pinging => "pinging".to_string(),
-            Phase::Acked => "seen".to_string(),
+            Phase::Acked => match state.remind_at {
+                Some(at) => format!("seen, reminds {}", at.with_timezone(&Local).format("%a %H:%M")),
+                None => "seen".to_string(),
+            },
             Phase::Snoozed => format!(
                 "snoozed until {}",
                 state

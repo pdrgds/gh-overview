@@ -47,13 +47,13 @@ ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAge
 |---|---|
 | `1` / `2` / `Tab` | switch tab |
 | `j` `k` / `↑` `↓`, `g` `G` | move, top, bottom |
-| `Enter` / `o` | open in browser; on My PRs this also acknowledges (stops pings) |
+| `Enter` / `o` | open in browser; on My PRs this also acknowledges (pauses pings for 30 minutes) |
 | `s` | snooze the selected PR's alert |
 | `d` | done: hide the PR until new activity arrives |
 | `r` | ask the daemon to poll now |
 | `q` | quit |
 
-Notifications: clicking the body opens the PR and stops the pings; a Snooze choice from the notification's Options menu pauses them; closing the notification does not count as acting, so it pings again after 5 minutes. Pings stop on their own once the PR no longer needs you (threads resolved, you pushed after a changes request, or you replied). Approvals and other news that leave nothing to do notify once, without a Snooze button. Empty bot reviews (for example a CodeRabbit pass with no new comments) don't notify at all.
+Notifications: clicking the body opens the PR and pauses the pings for 30 minutes (`remind_after_open`), after which they resume if the PR still needs you; a Snooze choice from the notification's Options menu pauses them; closing the notification does not count as acting, so it pings again after 5 minutes. Pings stop on their own once the PR no longer needs you (threads resolved, you pushed after a changes request, or you replied). Approvals and other news that leave nothing to do notify once, without a Snooze button. Empty bot reviews (for example a CodeRabbit pass with no new comments) don't notify at all.
 
 ## Configuration
 
@@ -62,6 +62,7 @@ Notifications: clicking the body opens the PR and stops the pings; a Snooze choi
 ```toml
 poll_interval = "1m"
 renotify_interval = "5m"
+remind_after_open = "30m"
 tomorrow_hour = 9
 snooze_choices = ["15m", "1h", "tomorrow"]
 extra_bots = []

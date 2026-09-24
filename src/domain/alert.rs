@@ -11,6 +11,7 @@ pub struct AlertState {
     pub last_notified_at: Option<DateTime<Utc>>,
     pub snoozed_until: Option<DateTime<Utc>>,
     pub acked_at: Option<DateTime<Utc>>,
+    pub remind_at: Option<DateTime<Utc>>,
     pub done_at: Option<DateTime<Utc>>,
     pub generation: u64,
 }
@@ -27,9 +28,9 @@ pub enum Phase {
 pub enum Event {
     NewActivity { items: Vec<ActivityItem>, untackled: bool },
     Tick { untackled: bool },
-    Opened { generation: u64 },
+    Opened { generation: u64, remind_at: DateTime<Utc> },
     SnoozedFromNotification { generation: u64, until: DateTime<Utc> },
-    Ack,
+    Ack { remind_at: DateTime<Utc> },
     Snooze { until: DateTime<Utc> },
     Done,
 }
@@ -51,7 +52,7 @@ impl AlertState {
             Phase::Idle
         } else if let Some(until) = self.snoozed_until {
             if until > now { Phase::Snoozed } else { Phase::Pinging }
-        } else if self.acked_at.is_some() {
+        } else if self.acked_at.is_some() && self.remind_at.is_none_or(|at| at > now) {
             Phase::Acked
         } else {
             Phase::Pinging
@@ -72,6 +73,7 @@ pub fn step(state: &AlertState, event: Event, now: DateTime<Utc>, renotify: Dura
             s.pending.extend(items);
             s.cycle_started_at.get_or_insert(now);
             s.acked_at = None;
+            s.remind_at = None;
             s.snoozed_until = None;
             s.done_at = None;
             let summary = summarize(&s.pending);
@@ -93,38 +95,37 @@ pub fn step(state: &AlertState, event: Event, now: DateTime<Utc>, renotify: Dura
             }
             Phase::Snoozed | Phase::Acked => {}
             Phase::Pinging => {
-                let snooze_expired = s.snoozed_until.is_some();
+                let pause_over = s.snoozed_until.is_some() || s.acked_at.is_some();
                 let due = s.last_notified_at.is_none_or(|t| now < t || now - t >= renotify);
-                if snooze_expired || due {
+                if pause_over || due {
                     s.snoozed_until = None;
                     s.acked_at = None;
+                    s.remind_at = None;
                     let summary = summarize(&s.pending);
                     notify(&mut s, &mut fx, now, summary, true);
                 }
             }
         },
-        Event::Opened { generation } => {
+        Event::Opened { generation, remind_at } => {
             fx.push(Effect::OpenUrl);
             if generation == state.generation && active {
-                s.acked_at = Some(now);
-                s.snoozed_until = None;
+                acknowledge(&mut s, now, remind_at);
             }
         }
         Event::SnoozedFromNotification { generation, until } => {
             if generation == state.generation && active {
-                s.snoozed_until = Some(until);
+                snooze(&mut s, until);
             }
         }
-        Event::Ack => {
+        Event::Ack { remind_at } => {
             if active {
-                s.acked_at = Some(now);
-                s.snoozed_until = None;
+                acknowledge(&mut s, now, remind_at);
                 fx.push(Effect::Remove);
             }
         }
         Event::Snooze { until } => {
             if active {
-                s.snoozed_until = Some(until);
+                snooze(&mut s, until);
                 fx.push(Effect::Remove);
             }
         }
@@ -147,10 +148,23 @@ fn notify(s: &mut AlertState, fx: &mut Vec<Effect>, now: DateTime<Utc>, summary:
     });
 }
 
+fn acknowledge(s: &mut AlertState, now: DateTime<Utc>, remind_at: DateTime<Utc>) {
+    s.acked_at = Some(now);
+    s.remind_at = Some(remind_at);
+    s.snoozed_until = None;
+}
+
+fn snooze(s: &mut AlertState, until: DateTime<Utc>) {
+    s.snoozed_until = Some(until);
+    s.acked_at = None;
+    s.remind_at = None;
+}
+
 fn end_cycle(s: &mut AlertState) {
     s.cycle_started_at = None;
     s.pending.clear();
     s.acked_at = None;
+    s.remind_at = None;
     s.snoozed_until = None;
 }
 
@@ -162,6 +176,10 @@ mod tests {
     use crate::domain::testkit::t;
 
     const RENOTIFY: Duration = Duration::minutes(5);
+
+    fn later() -> DateTime<Utc> {
+        t(24 * 60)
+    }
 
     fn item(id: &str, actor: &str, state: Option<ReviewState>) -> ActivityItem {
         ActivityItem {
@@ -229,7 +247,7 @@ mod tests {
     fn summary_accumulates_while_pinging_and_resets_after_ack() {
         let (s, fx) = step(&pinging(), changes("bob"), t(1), RENOTIFY);
         assert_eq!(notified(&fx)[0].1, "alice requested changes · bob requested changes");
-        let (s, _) = step(&s, Event::Ack, t(2), RENOTIFY);
+        let (s, _) = step(&s, Event::Ack { remind_at: later() }, t(2), RENOTIFY);
         let (s, fx) = step(&s, changes("carol"), t(3), RENOTIFY);
         assert_eq!(notified(&fx)[0].1, "carol requested changes");
         assert_eq!(s.phase(t(3)), Phase::Pinging);
@@ -254,7 +272,15 @@ mod tests {
 
     #[test]
     fn opened_current_generation_opens_and_acks() {
-        let (s, fx) = step(&pinging(), Event::Opened { generation: 1 }, t(1), RENOTIFY);
+        let (s, fx) = step(
+            &pinging(),
+            Event::Opened {
+                generation: 1,
+                remind_at: later(),
+            },
+            t(1),
+            RENOTIFY,
+        );
         assert_eq!(fx, vec![Effect::OpenUrl]);
         assert_eq!(s.phase(t(1)), Phase::Acked);
         let (_, fx) = step(&s, Event::Tick { untackled: true }, t(30), RENOTIFY);
@@ -262,9 +288,65 @@ mod tests {
     }
 
     #[test]
+    fn an_opened_pr_pings_again_at_its_reminder_while_untackled() {
+        let (s, _) = step(
+            &pinging(),
+            Event::Opened {
+                generation: 1,
+                remind_at: t(31),
+            },
+            t(1),
+            RENOTIFY,
+        );
+        assert_eq!(s.phase(t(30)), Phase::Acked);
+        let (s, fx) = step(&s, Event::Tick { untackled: true }, t(30), RENOTIFY);
+        assert!(fx.is_empty());
+        assert_eq!(s.phase(t(31)), Phase::Pinging);
+        let (s, fx) = step(&s, Event::Tick { untackled: true }, t(31), RENOTIFY);
+        assert_eq!(notified(&fx), vec![(2, "alice requested changes".to_string())]);
+        assert_eq!((s.acked_at, s.remind_at), (None, None));
+        let (_, fx) = step(&s, Event::Tick { untackled: true }, t(35), RENOTIFY);
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn an_opened_pr_tackled_before_its_reminder_stays_quiet() {
+        let (s, _) = step(&pinging(), Event::Ack { remind_at: t(31) }, t(1), RENOTIFY);
+        let (s, fx) = step(&s, Event::Tick { untackled: false }, t(20), RENOTIFY);
+        assert_eq!(fx, vec![Effect::Remove]);
+        let (_, fx) = step(&s, Event::Tick { untackled: false }, t(31), RENOTIFY);
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn snoozing_an_opened_pr_replaces_its_reminder() {
+        let (s, _) = step(&pinging(), Event::Ack { remind_at: t(31) }, t(1), RENOTIFY);
+        let (s, _) = step(&s, Event::Snooze { until: t(60) }, t(2), RENOTIFY);
+        assert_eq!(s.phase(t(31)), Phase::Snoozed);
+        let (_, fx) = step(&s, Event::Tick { untackled: true }, t(31), RENOTIFY);
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn alerts_acknowledged_before_reminders_existed_stay_seen() {
+        let (mut s, _) = step(&pinging(), Event::Ack { remind_at: t(31) }, t(1), RENOTIFY);
+        s.remind_at = None;
+        let (_, fx) = step(&s, Event::Tick { untackled: true }, t(600), RENOTIFY);
+        assert!(fx.is_empty());
+    }
+
+    #[test]
     fn stale_generation_responses_open_the_pr_but_change_nothing() {
         let (s, _) = step(&pinging(), Event::Tick { untackled: true }, t(5), RENOTIFY);
-        let (s2, fx) = step(&s, Event::Opened { generation: 1 }, t(6), RENOTIFY);
+        let (s2, fx) = step(
+            &s,
+            Event::Opened {
+                generation: 1,
+                remind_at: later(),
+            },
+            t(6),
+            RENOTIFY,
+        );
         assert_eq!(fx, vec![Effect::OpenUrl]);
         assert_eq!(s2, s);
         let (s3, _) = step(
@@ -301,7 +383,7 @@ mod tests {
 
     #[test]
     fn snooze_after_ack_resumes_pinging_at_expiry() {
-        let (s, _) = step(&pinging(), Event::Ack, t(1), RENOTIFY);
+        let (s, _) = step(&pinging(), Event::Ack { remind_at: later() }, t(1), RENOTIFY);
         let (s, fx) = step(&s, Event::Snooze { until: t(60) }, t(2), RENOTIFY);
         assert_eq!(fx, vec![Effect::Remove]);
         let (s, fx) = step(&s, Event::Tick { untackled: true }, t(60), RENOTIFY);
@@ -311,7 +393,7 @@ mod tests {
 
     #[test]
     fn tackled_ends_cycle_and_removes_notification() {
-        let (s, _) = step(&pinging(), Event::Ack, t(1), RENOTIFY);
+        let (s, _) = step(&pinging(), Event::Ack { remind_at: later() }, t(1), RENOTIFY);
         let (s, fx) = step(&s, Event::Tick { untackled: false }, t(2), RENOTIFY);
         assert_eq!(fx, vec![Effect::Remove]);
         assert_eq!(s.phase(t(2)), Phase::Idle);
@@ -321,7 +403,7 @@ mod tests {
     #[test]
     fn ack_and_snooze_are_noops_when_idle() {
         let idle = AlertState::default();
-        let (s, fx) = step(&idle, Event::Ack, t(0), RENOTIFY);
+        let (s, fx) = step(&idle, Event::Ack { remind_at: later() }, t(0), RENOTIFY);
         assert!(fx.is_empty());
         assert_eq!(s, idle);
         let (s, fx) = step(&idle, Event::Snooze { until: t(10) }, t(0), RENOTIFY);
@@ -372,14 +454,22 @@ mod tests {
             untackled: false,
         };
         let (s, _) = step(&AlertState::default(), approval, t(0), RENOTIFY);
-        let (s2, fx) = step(&s, Event::Opened { generation: 1 }, t(1), RENOTIFY);
+        let (s2, fx) = step(
+            &s,
+            Event::Opened {
+                generation: 1,
+                remind_at: later(),
+            },
+            t(1),
+            RENOTIFY,
+        );
         assert_eq!(fx, vec![Effect::OpenUrl]);
         assert_eq!(s2, s);
     }
 
     #[test]
     fn tui_ack_removes_the_notification() {
-        let (s, fx) = step(&pinging(), Event::Ack, t(1), RENOTIFY);
+        let (s, fx) = step(&pinging(), Event::Ack { remind_at: later() }, t(1), RENOTIFY);
         assert_eq!(fx, vec![Effect::Remove]);
         assert_eq!(s.phase(t(1)), Phase::Acked);
     }
@@ -387,7 +477,7 @@ mod tests {
     #[test]
     fn ack_while_snoozed_stays_quiet_after_the_snooze() {
         let (s, _) = step(&pinging(), Event::Snooze { until: t(60) }, t(1), RENOTIFY);
-        let (s, fx) = step(&s, Event::Ack, t(2), RENOTIFY);
+        let (s, fx) = step(&s, Event::Ack { remind_at: later() }, t(2), RENOTIFY);
         assert_eq!(fx, vec![Effect::Remove]);
         assert_eq!(s.phase(t(2)), Phase::Acked);
         let (_, fx) = step(&s, Event::Tick { untackled: true }, t(61), RENOTIFY);
@@ -441,7 +531,15 @@ mod tests {
     #[test]
     fn opening_while_snoozed_acks_and_clears_the_snooze() {
         let (s, _) = step(&pinging(), Event::Snooze { until: t(60) }, t(1), RENOTIFY);
-        let (s, fx) = step(&s, Event::Opened { generation: 1 }, t(2), RENOTIFY);
+        let (s, fx) = step(
+            &s,
+            Event::Opened {
+                generation: 1,
+                remind_at: later(),
+            },
+            t(2),
+            RENOTIFY,
+        );
         assert_eq!(fx, vec![Effect::OpenUrl]);
         assert_eq!(s.snoozed_until, None);
         assert_eq!(s.phase(t(2)), Phase::Acked);

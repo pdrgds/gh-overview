@@ -24,6 +24,8 @@ pub struct Config {
     pub poll_interval: Duration,
     #[serde(with = "humantime_serde", default = "default_renotify")]
     pub renotify_interval: Duration,
+    #[serde(with = "humantime_serde", default = "default_remind_after_open")]
+    pub remind_after_open: Duration,
     #[serde(default = "default_tomorrow_hour")]
     pub tomorrow_hour: u32,
     #[serde(default = "default_snooze")]
@@ -41,6 +43,10 @@ fn default_renotify() -> Duration {
     Duration::from_secs(300)
 }
 
+fn default_remind_after_open() -> Duration {
+    Duration::from_secs(30 * 60)
+}
+
 fn default_tomorrow_hour() -> u32 {
     9
 }
@@ -54,6 +60,7 @@ impl Config {
         Config {
             poll_interval: default_poll(),
             renotify_interval: default_renotify(),
+            remind_after_open: default_remind_after_open(),
             tomorrow_hour: default_tomorrow_hour(),
             snooze_choices: default_snooze(),
             extra_bots: vec![],
@@ -87,6 +94,9 @@ impl Config {
         }
         if self.renotify_interval < Duration::from_secs(60) {
             bail!("renotify_interval must be at least 1m");
+        }
+        if self.remind_after_open < Duration::from_secs(60) {
+            bail!("remind_after_open must be at least 1m");
         }
         if self.tomorrow_hour > 23 {
             bail!("tomorrow_hour must be 0..=23, got {}", self.tomorrow_hour);
@@ -136,6 +146,10 @@ impl Config {
 
     pub fn renotify(&self) -> chrono::Duration {
         chrono::Duration::from_std(self.renotify_interval).expect("renotify interval fits")
+    }
+
+    pub fn remind_after_open(&self) -> chrono::Duration {
+        chrono::Duration::from_std(self.remind_after_open).expect("reminder interval fits")
     }
 }
 
@@ -195,6 +209,7 @@ mod tests {
     const FULL: &str = r#"
 poll_interval = "90s"
 renotify_interval = "10m"
+remind_after_open = "45m"
 tomorrow_hour = 8
 snooze_choices = ["30m", "tomorrow"]
 extra_bots = ["ci-robot"]
@@ -214,6 +229,7 @@ label = "personal"
         let c = Config::parse(FULL).unwrap();
         assert_eq!(c.poll_interval, Duration::from_secs(90));
         assert_eq!(c.renotify_interval, Duration::from_secs(600));
+        assert_eq!(c.remind_after_open, Duration::from_secs(45 * 60));
         assert_eq!(c.tomorrow_hour, 8);
         assert_eq!(c.snooze().len(), 2);
         assert_eq!(c.label_for("OCTOCAT"), "personal");
@@ -235,6 +251,7 @@ label = "personal"
         let c = Config::parse("[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").unwrap();
         assert_eq!(c.poll_interval, Duration::from_secs(60));
         assert_eq!(c.renotify_interval, Duration::from_secs(300));
+        assert_eq!(c.remind_after_open, Duration::from_secs(30 * 60));
         assert_eq!(c.snooze_choices, vec!["15m", "1h", "tomorrow"]);
     }
 
@@ -242,6 +259,7 @@ label = "personal"
     fn rejects_invalid_config() {
         assert!(Config::parse("accounts = []").is_err());
         assert!(Config::parse("renotify_interval = \"0s\"\n[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").is_err());
+        assert!(Config::parse("remind_after_open = \"10s\"\n[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").is_err());
         assert!(Config::parse("poll_interval = \"1s\"\n[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").is_err());
         assert!(Config::parse("tomorrow_hour = 24\n[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").is_err());
         assert!(Config::parse("snooze_choices = [\"soon\"]\n[[accounts]]\nlogin = \"a\"\nlabel = \"a\"\n").is_err());

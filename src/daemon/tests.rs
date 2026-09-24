@@ -210,7 +210,7 @@ fn approval_with_nothing_to_tackle_notifies_once_without_snooze() {
 }
 
 #[test]
-fn clicking_the_notification_opens_and_stops_pings() {
+fn clicking_the_notification_opens_and_pauses_pings_until_the_reminder() {
     let mut h = harness().bootstrapped();
     h.poll(vec![pr_with_changes(&["r1"])]);
     h.notifier.take();
@@ -225,9 +225,62 @@ fn clicking_the_notification_opens_and_stops_pings() {
         *h.opened.borrow(),
         vec!["me-work https://github.com/acme/api/pull/1".to_string()]
     );
-    h.clock.advance(Duration::minutes(30));
+    h.clock.advance(Duration::minutes(29));
     h.daemon.tick().unwrap();
     assert!(h.notifier.take().is_empty());
+    h.clock.advance(Duration::minutes(1));
+    h.daemon.tick().unwrap();
+    assert_eq!(
+        h.notifier.take(),
+        vec![Call::Show(
+            "acme/api#1".into(),
+            2,
+            "alice requested changes".into(),
+            true
+        )]
+    );
+}
+
+#[test]
+fn opening_from_the_tui_also_reminds_after_the_interval() {
+    let mut h = harness().bootstrapped();
+    h.poll(vec![pr_with_changes(&["r1"])]);
+    h.notifier.take();
+    h.daemon
+        .store
+        .db()
+        .enqueue(
+            &Command::Ack {
+                pr_key: "acme/api#1".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    h.daemon.consume_commands().unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
+    h.clock.advance(Duration::minutes(30));
+    h.daemon.tick().unwrap();
+    assert_eq!(h.notifier.take().len(), 1);
+}
+
+#[test]
+fn a_pr_tackled_after_opening_gets_no_reminder() {
+    let mut h = harness().bootstrapped();
+    h.poll(vec![pr_with_changes(&["r1"])]);
+    h.notifier.take();
+    h.daemon
+        .handle(Delivered {
+            pr_key: "acme/api#1".into(),
+            generation: 1,
+            response: Response::Opened,
+        })
+        .unwrap();
+    h.clock.advance(Duration::minutes(10));
+    h.poll(vec![]);
+    h.daemon.tick().unwrap();
+    h.clock.advance(Duration::minutes(30));
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().iter().all(|call| matches!(call, Call::Remove(_))));
 }
 
 #[test]

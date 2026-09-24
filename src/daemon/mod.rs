@@ -338,6 +338,7 @@ impl Daemon {
         let event = match delivered.response {
             Response::Opened => Event::Opened {
                 generation: delivered.generation,
+                remind_at: now + self.config.remind_after_open(),
             },
             Response::Snoozed(label) => {
                 let hour = self.config.tomorrow_hour;
@@ -363,7 +364,10 @@ impl Daemon {
                     self.next_poll.clear();
                     Ok(())
                 }
-                Command::Ack { pr_key } => self.apply_event(&pr_key, Event::Ack),
+                Command::Ack { pr_key } => {
+                    let remind_at = self.clock.now() + self.config.remind_after_open();
+                    self.apply_event(&pr_key, Event::Ack { remind_at })
+                }
                 Command::Snooze { pr_key, until } => self.apply_event(&pr_key, Event::Snooze { until }),
                 Command::Done { pr_key } => self.apply_event(&pr_key, Event::Done),
             };
