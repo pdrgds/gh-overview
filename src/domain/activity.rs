@@ -51,7 +51,7 @@ pub fn activity_of(pr: &MyPr, id: &Identity) -> Vec<ActivityItem> {
             at: c.created_at,
         });
     let mut items: Vec<ActivityItem> = reviews.chain(comments).collect();
-    items.sort_by(|a, b| a.at.cmp(&b.at));
+    items.sort_by_key(|a| a.at);
     items
 }
 
