@@ -1,0 +1,11 @@
+---
+source: src/tui/view.rs
+expression: "draw(&app(), 120, 7).backend()"
+---
+" gh-overview   [1] To review (2)   [2] My PRs (1)                                                      ● polled 12s ago "
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+"  REPO                         #      TITLE                              AUTHOR         AGE  ACCT       VIA             "
+"▶ acme/gateway                 412    [api] add rate limits to the publ… alice          10h  work                       "
+"  acme/infrastructure          77     PR 77                              bob            10h  work       team:platform   "
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+" enter open · r refresh · tab/1/2 switch · j/k move · q quit                                                            "

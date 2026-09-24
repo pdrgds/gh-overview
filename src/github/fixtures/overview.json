@@ -1,0 +1,111 @@
+{
+  "data": {
+    "rateLimit": { "remaining": 4609, "resetAt": "2026-09-21T18:20:12Z" },
+    "mine": {
+      "issueCount": 2,
+      "nodes": [
+        {
+          "number": 412,
+          "title": "[api] add rate limits",
+          "url": "https://github.com/acme/api/pull/412",
+          "isDraft": false,
+          "createdAt": "2026-09-20T08:00:00Z",
+          "repository": { "nameWithOwner": "acme/api" },
+          "author": { "login": "me-work" },
+          "headRefOid": "abc123",
+          "reviews": {
+            "pageInfo": { "hasPreviousPage": false },
+            "nodes": [
+              {
+                "id": "PRR_1",
+                "state": "COMMENTED",
+                "submittedAt": "2026-09-21T09:00:00Z",
+                "author": { "__typename": "Bot", "login": "coderabbitai" },
+                "commit": { "oid": "abc123" },
+                "comments": { "totalCount": 3 }
+              },
+              {
+                "id": "PRR_2",
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-09-21T09:30:00Z",
+                "author": { "__typename": "User", "login": "alice" },
+                "commit": { "oid": "abc123" },
+                "comments": { "totalCount": 1 }
+              }
+            ]
+          },
+          "reviewThreads": {
+            "pageInfo": { "hasPreviousPage": false },
+            "nodes": [
+              {
+                "isResolved": false,
+                "firstComment": { "nodes": [ { "author": { "login": "coderabbitai" } } ] },
+                "lastComment": { "nodes": [ { "author": { "login": "coderabbitai" } } ] }
+              },
+              {
+                "isResolved": true,
+                "firstComment": { "nodes": [ { "author": { "login": "alice" } } ] },
+                "lastComment": { "nodes": [ { "author": { "login": "me-work" } } ] }
+              }
+            ]
+          },
+          "comments": {
+            "pageInfo": { "hasPreviousPage": false },
+            "nodes": [
+              { "id": "IC_1", "createdAt": "2026-09-21T09:40:00Z", "author": { "__typename": "User", "login": "bob" } },
+              { "id": "IC_2", "createdAt": "2026-09-21T09:41:00Z", "author": null }
+            ]
+          }
+        },
+        {
+          "number": 9,
+          "title": "wip: spike",
+          "url": "https://github.com/acme/web/pull/9",
+          "isDraft": true,
+          "createdAt": "2026-09-19T08:00:00Z",
+          "repository": { "nameWithOwner": "acme/web" },
+          "author": { "login": "me-work" },
+          "headRefOid": "def456",
+          "reviews": { "pageInfo": { "hasPreviousPage": true }, "nodes": [] },
+          "reviewThreads": { "pageInfo": { "hasPreviousPage": true }, "nodes": [] },
+          "comments": { "pageInfo": { "hasPreviousPage": false }, "nodes": [] }
+        }
+      ]
+    },
+    "review": {
+      "issueCount": 2,
+      "nodes": [
+        {
+          "number": 77,
+          "title": "bump node group",
+          "url": "https://github.com/acme/infra/pull/77",
+          "isDraft": false,
+          "createdAt": "2026-09-18T08:00:00Z",
+          "repository": { "nameWithOwner": "acme/infra" },
+          "author": { "login": "carol" },
+          "reviewRequests": {
+            "nodes": [
+              { "requestedReviewer": { "__typename": "Team", "slug": "platform" } }
+            ]
+          }
+        },
+        {
+          "number": 5,
+          "title": "fix typo",
+          "url": "https://github.com/acme/docs/pull/5",
+          "isDraft": false,
+          "createdAt": "2026-09-21T07:00:00Z",
+          "repository": { "nameWithOwner": "acme/docs" },
+          "author": { "login": "dave" },
+          "reviewRequests": {
+            "nodes": [
+              { "requestedReviewer": { "__typename": "User", "login": "someone-else" } },
+              { "requestedReviewer": { "__typename": "User", "login": "Me-Work" } },
+              { "requestedReviewer": { "__typename": "Mannequin" } }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

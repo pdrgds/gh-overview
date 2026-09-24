@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: "draw(&app, 120, 10).backend()"
+---
+" gh-overview   [1] To review (2)   [2] My PRs (1)                                                      ● polled 12s ago "
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+"  REPO                         #      TITLE     ┌ Snooze ──────────────┐                           ALERT      ACCT      "
+"▶ octocat/dotfiles             310    [draft] PR│ 1  15m               │reads · changes: alice     🔔 pinging personal  " Hidden by multi-width symbols: [(100, " ")]
+"                                                │ 2  1h                │                                                "
+"                                                │ 3  Tomorrow 09:00    │                                                "
+"                                                │ esc cancel           │                                                "
+"                                                └──────────────────────┘                                                "
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+" enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit                                        "

@@ -1,0 +1,39 @@
+[package]
+name = "gh-overview"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "A terminal overview of the GitHub pull requests waiting on you, with a macOS daemon that keeps nudging until you act"
+license = "MIT"
+repository = "https://github.com/pdrgds/gh-overview"
+readme = "README.md"
+keywords = ["github", "pull-requests", "code-review", "notifications", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["/.github", "/docs"]
+
+[[bin]]
+name = "ghov"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+etcetera = "0.11"
+humantime = "2"
+humantime-serde = "1"
+open = "5"
+ratatui = "0.30"
+reqwest = { version = "0.13", features = ["blocking", "json"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+chrono-tz = "0.10"
+insta = "1"
+tempfile = "3"
