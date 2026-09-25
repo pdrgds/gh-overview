@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" width="128" alt=""></p>
+
 # gh-overview (`ghov`)
 
 A terminal overview of the GitHub pull requests waiting on you, across several `gh` accounts, plus a macOS background daemon that notifies you when someone reviews or comments on your PRs, re-notifies every 5 minutes until you act, and lets you snooze.

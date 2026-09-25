@@ -15,6 +15,8 @@ pub const NOTIFIER_BINARY: Option<&[u8]> = Some(include_bytes!(concat!(env!("OUT
 #[cfg(not(target_os = "macos"))]
 pub const NOTIFIER_BINARY: Option<&[u8]> = None;
 
+pub const APP_ICON: &[u8] = include_bytes!("../../notifier/AppIcon.icns");
+
 pub fn app_path(home: &Path) -> PathBuf {
     home.join("Applications").join(APP_NAME)
 }
@@ -47,6 +49,8 @@ pub fn info_plist() -> String {
   <string>gh-overview</string>
   <key>CFBundleExecutable</key>
   <string>{EXECUTABLE}</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -66,8 +70,11 @@ pub fn info_plist() -> String {
 
 pub fn write_bundle(app: &Path, binary: &[u8]) -> Result<()> {
     let executable = executable_path(app);
+    let resources = app.join("Contents/Resources");
     std::fs::create_dir_all(executable.parent().expect("executable lives in Contents/MacOS"))?;
+    std::fs::create_dir_all(&resources)?;
     replace_file(&app.join("Contents/Info.plist"), info_plist().as_bytes(), false)?;
+    replace_file(&resources.join("AppIcon.icns"), APP_ICON, false)?;
     replace_file(&executable, binary, true)?;
     Ok(())
 }
@@ -150,6 +157,7 @@ mod tests {
         assert!(plist.contains("<string>dev.pdrgds.gh-overview.notifier</string>"));
         assert!(plist.contains("<key>CFBundleExecutable</key>\n  <string>gh-overview-notifier</string>"));
         assert!(plist.contains("<key>LSUIElement</key>\n  <true/>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key>\n  <string>AppIcon</string>"));
     }
 
     #[cfg(unix)]
@@ -166,6 +174,10 @@ mod tests {
         assert!(!is_executable(&app.join("Contents/Info.plist")));
         assert_ne!(std::fs::metadata(executable_path(&app)).unwrap().ino(), first.ino());
         assert_eq!(std::fs::read_dir(app.join("Contents/MacOS")).unwrap().count(), 1);
+        let icon = app.join("Contents/Resources/AppIcon.icns");
+        assert_eq!(std::fs::read(&icon).unwrap(), APP_ICON);
+        assert!(!is_executable(&icon));
+        assert_eq!(std::fs::read_dir(app.join("Contents/Resources")).unwrap().count(), 1);
         assert!(
             std::fs::read_to_string(app.join("Contents/Info.plist"))
                 .unwrap()
@@ -181,5 +193,10 @@ mod tests {
     fn the_notifier_binary_is_embedded() {
         let binary = NOTIFIER_BINARY.expect("macOS builds embed the notifier");
         assert_eq!(&binary[..4], &[0xcf, 0xfa, 0xed, 0xfe]);
+    }
+
+    #[test]
+    fn the_app_icon_is_embedded() {
+        assert_eq!(&APP_ICON[..4], b"icns");
     }
 }
