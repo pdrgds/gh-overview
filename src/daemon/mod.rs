@@ -156,6 +156,9 @@ impl Daemon {
             if let Err(err) = self.heartbeat() {
                 warn!("heartbeat failed: {err:#}");
             }
+            if let Err(err) = self.consume_commands() {
+                warn!("applying TUI commands failed: {err:#}");
+            }
         }
     }
 
@@ -357,6 +360,9 @@ impl Daemon {
     }
 
     pub fn consume_commands(&mut self) -> Result<()> {
+        if !self.store.db().has_commands()? {
+            return Ok(());
+        }
         let commands = self.store.tx(|db| db.take_commands())?;
         for command in commands {
             let result = match command {

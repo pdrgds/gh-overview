@@ -28,6 +28,12 @@ impl Db<'_> {
         Ok(())
     }
 
+    pub fn has_commands(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM commands)", [], |row| row.get(0))?)
+    }
+
     pub fn take_commands(&self) -> Result<Vec<Command>> {
         let mut stmt = self
             .conn
@@ -84,10 +90,13 @@ mod tests {
             Command::Done { pr_key: "a#3".into() },
             Command::Refresh,
         ];
+        assert!(!store.db().has_commands().unwrap());
         for c in &sent {
             store.db().enqueue(c, t(0)).unwrap();
         }
+        assert!(store.db().has_commands().unwrap());
         assert_eq!(store.tx(|db| db.take_commands()).unwrap(), sent);
+        assert!(!store.db().has_commands().unwrap());
         assert!(store.tx(|db| db.take_commands()).unwrap().is_empty());
     }
 

@@ -1,7 +1,7 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tracing::{error, info, warn};
@@ -20,6 +20,7 @@ use crate::paths::Paths;
 use crate::store::Store;
 
 const TICK: Duration = Duration::from_secs(5);
+const COMMAND_CHECK: Duration = Duration::from_millis(250);
 const LOG_MAX_BYTES: u64 = 5_000_000;
 const LOG_KEEP_BYTES: u64 = 1_000_000;
 
@@ -89,16 +90,23 @@ pub fn run(paths: &Paths, config: Config) -> Result<()> {
         if let Err(err) = daemon.cycle() {
             error!("cycle failed: {err:#}");
         }
-        match rx.recv_timeout(TICK) {
-            Ok(delivered) => {
-                for d in std::iter::once(delivered).chain(rx.try_iter()) {
-                    if let Err(err) = daemon.handle(d) {
-                        error!("handling notification response failed: {err:#}");
+        let next_cycle = Instant::now() + TICK;
+        while let Some(left) = next_cycle.checked_duration_since(Instant::now()) {
+            let wait = left.min(COMMAND_CHECK);
+            match rx.recv_timeout(wait) {
+                Ok(delivered) => {
+                    for d in std::iter::once(delivered).chain(rx.try_iter()) {
+                        if let Err(err) = daemon.handle(d) {
+                            error!("handling notification response failed: {err:#}");
+                        }
                     }
                 }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => std::thread::sleep(wait),
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(TICK),
+            if let Err(err) = daemon.consume_commands() {
+                error!("applying TUI commands failed: {err:#}");
+            }
         }
     }
 }

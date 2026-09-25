@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::status::{HeaderStatus, ago, header_status};
 use crate::config::Config;
-use crate::domain::alert::{AlertState, Phase};
+use crate::domain::alert::{AlertState, Event, Phase, step};
 use crate::domain::reasons::describe;
 use crate::domain::snooze::SnoozeChoice;
 use crate::store::{Command, Db, PrRow, Tab};
@@ -42,6 +42,14 @@ pub enum Action {
     Enqueue(Command),
 }
 
+const PREDICTION_TTL: Duration = Duration::seconds(15);
+
+struct Prediction {
+    base: AlertState,
+    state: AlertState,
+    at: DateTime<Utc>,
+}
+
 pub struct App {
     pub tab: Tab,
     pub review: Vec<ViewRow>,
@@ -53,6 +61,10 @@ pub struct App {
     hidden: HashSet<String>,
     snooze: Vec<SnoozeChoice>,
     tomorrow_hour: u32,
+    renotify: Duration,
+    remind_after_open: Duration,
+    alerts: HashMap<String, AlertState>,
+    predictions: HashMap<String, Prediction>,
 }
 
 fn view_row(row: PrRow, config: &Config, now: DateTime<Utc>, badge: Badge) -> ViewRow {
@@ -139,11 +151,22 @@ impl App {
             hidden: HashSet::new(),
             snooze: config.snooze(),
             tomorrow_hour: config.tomorrow_hour,
+            renotify: config.renotify(),
+            remind_after_open: config.remind_after_open(),
+            alerts: HashMap::new(),
+            predictions: HashMap::new(),
         }
     }
 
     pub fn load(&mut self, db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result<()> {
-        let alerts: HashMap<String, AlertState> = db.alerts()?.into_iter().collect();
+        self.alerts = db.alerts()?.into_iter().collect();
+        let stored = &self.alerts;
+        self.predictions
+            .retain(|key, p| stored.get(key).cloned().unwrap_or_default() == p.base && now - p.at < PREDICTION_TTL);
+        let mut alerts = self.alerts.clone();
+        for (key, p) in &self.predictions {
+            alerts.insert(key.clone(), p.state.clone());
+        }
         self.hidden.retain(|key| {
             alerts
                 .get(key)
@@ -180,6 +203,17 @@ impl App {
 
     pub fn snooze_labels(&self) -> Vec<String> {
         self.snooze.iter().map(|c| c.label(self.tomorrow_hour)).collect()
+    }
+
+    fn predict(&mut self, key: &str, event: Event, now: DateTime<Utc>) {
+        let base = self.alerts.get(key).cloned().unwrap_or_default();
+        let (base, from) = match self.predictions.remove(key) {
+            Some(p) => (p.base, p.state),
+            None => (base.clone(), base),
+        };
+        let (state, _) = step(&from, event, now, self.renotify);
+        self.predictions
+            .insert(key.to_string(), Prediction { base, state, at: now });
     }
 
     fn select(&mut self, index: usize) {
@@ -227,6 +261,8 @@ impl App {
                         url: row.url.clone(),
                     });
                     if self.tab == Tab::Mine {
+                        let remind_at = now + self.remind_after_open;
+                        self.predict(&row.key, Event::Ack { remind_at }, now);
                         actions.push(Action::Enqueue(Command::Ack { pr_key: row.key }));
                     }
                 }
@@ -258,10 +294,9 @@ impl App {
             && let Some(row) = self.selected_row()
         {
             let until = choice.until(now, &Local, self.tomorrow_hour);
-            actions.push(Action::Enqueue(Command::Snooze {
-                pr_key: row.key.clone(),
-                until,
-            }));
+            let pr_key = row.key.clone();
+            self.predict(&pr_key, Event::Snooze { until }, now);
+            actions.push(Action::Enqueue(Command::Snooze { pr_key, until }));
         }
         if matches!(key.code, KeyCode::Esc | KeyCode::Char(_)) {
             self.snoozing = false;
@@ -528,6 +563,75 @@ mod tests {
         db.put_alert("acme/a#1", &AlertState::default()).unwrap();
         app.load(&db, &config(), t(3)).unwrap();
         assert_eq!(app.mine.len(), 1);
+    }
+
+    fn store_with_a_pinging_pr() -> crate::store::Store {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let db = store.db();
+        db.replace_account_prs("me-work", &[row(Tab::Mine, "me-work", "acme/a", 1)])
+            .unwrap();
+        db.put_alert(
+            "acme/a#1",
+            &AlertState {
+                cycle_started_at: Some(t(0)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        store
+    }
+
+    fn loaded_on_mine(db: &Db<'_>) -> App {
+        let mut app = App::new(&config());
+        app.tab = Tab::Mine;
+        app.load(db, &config(), t(0)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Pinging);
+        app
+    }
+
+    #[test]
+    fn a_snooze_shows_at_once_then_follows_the_daemon() {
+        let store = store_with_a_pinging_pr();
+        let db = store.db();
+        let mut app = loaded_on_mine(&db);
+        app.on_key(key(KeyCode::Char('s')), t(0));
+        app.on_key(key(KeyCode::Char('1')), t(0));
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Snoozed(t(15)));
+        db.put_alert(
+            "acme/a#1",
+            &AlertState {
+                cycle_started_at: Some(t(0)),
+                snoozed_until: Some(t(16)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Snoozed(t(16)));
+    }
+
+    #[test]
+    fn opening_a_pinging_pr_shows_it_seen_at_once() {
+        let store = store_with_a_pinging_pr();
+        let db = store.db();
+        let mut app = loaded_on_mine(&db);
+        app.on_key(key(KeyCode::Enter), t(0));
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Seen);
+    }
+
+    #[test]
+    fn a_prediction_the_daemon_never_confirms_expires() {
+        let store = store_with_a_pinging_pr();
+        let db = store.db();
+        let mut app = loaded_on_mine(&db);
+        app.on_key(key(KeyCode::Char('s')), t(0));
+        app.on_key(key(KeyCode::Char('2')), t(0));
+        app.load(&db, &config(), t(0) + Duration::seconds(14)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Snoozed(t(60)));
+        app.load(&db, &config(), t(0) + Duration::seconds(15)).unwrap();
+        assert_eq!(app.mine[0].badge, Badge::Pinging);
     }
 
     #[test]
