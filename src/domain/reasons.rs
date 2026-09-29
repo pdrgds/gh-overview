@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::actors::Identity;
-use super::model::{MyPr, Review, ReviewState};
+use super::model::{MyPr, Review, ReviewMark, ReviewState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -11,6 +11,8 @@ pub enum Reason {
     Threads { count: u32 },
     ChangesRequested { by: Vec<String> },
     Comments { count: u32 },
+    Approved { by: Vec<String> },
+    Reviewed { by: Vec<String> },
 }
 
 pub fn reasons(pr: &MyPr, id: &Identity) -> Vec<Reason> {
@@ -30,6 +32,47 @@ pub fn reasons(pr: &MyPr, id: &Identity) -> Vec<Reason> {
     out
 }
 
+pub fn reviewed_by_others(reviews: &[ReviewMark], id: &Identity) -> Vec<Reason> {
+    let mut ordered: Vec<&ReviewMark> = reviews.iter().filter(|r| r.submitted_at.is_some()).collect();
+    ordered.sort_by_key(|r| r.submitted_at);
+    let mut latest: BTreeMap<&str, ReviewState> = BTreeMap::new();
+    for r in ordered {
+        if id.is_me(&r.author.login) || id.is_bot(&r.author) {
+            continue;
+        }
+        match r.state {
+            ReviewState::Approved | ReviewState::ChangesRequested => {
+                latest.insert(&r.author.login, r.state);
+            }
+            ReviewState::Commented => {
+                latest.entry(&r.author.login).or_insert(r.state);
+            }
+            _ => {}
+        }
+    }
+    let by = |state: ReviewState| -> Vec<String> {
+        latest
+            .iter()
+            .filter(|(_, s)| **s == state)
+            .map(|(login, _)| login.to_string())
+            .collect()
+    };
+    let mut out = Vec::new();
+    let changes = by(ReviewState::ChangesRequested);
+    if !changes.is_empty() {
+        out.push(Reason::ChangesRequested { by: changes });
+    }
+    let approved = by(ReviewState::Approved);
+    if !approved.is_empty() {
+        out.push(Reason::Approved { by: approved });
+    }
+    let commented = by(ReviewState::Commented);
+    if !commented.is_empty() {
+        out.push(Reason::Reviewed { by: commented });
+    }
+    out
+}
+
 pub fn describe(reasons: &[Reason]) -> String {
     reasons
         .iter()
@@ -37,6 +80,8 @@ pub fn describe(reasons: &[Reason]) -> String {
             Reason::Threads { count } => plural(*count, "thread"),
             Reason::ChangesRequested { by } => format!("changes: {}", by.join(", ")),
             Reason::Comments { count } => plural(*count, "comment"),
+            Reason::Approved { by } => format!("approved: {}", by.join(", ")),
+            Reason::Reviewed { by } => format!("reviewed: {}", by.join(", ")),
         })
         .collect::<Vec<_>>()
         .join(" · ")
@@ -105,6 +150,47 @@ mod tests {
     use super::*;
     use crate::domain::model::{Author, ReviewState::*};
     use crate::domain::testkit::*;
+
+    fn mark(login: &str, bot: bool, state: ReviewState, at: i64) -> ReviewMark {
+        ReviewMark {
+            author: if bot { Author::bot(login) } else { Author::user(login) },
+            state,
+            submitted_at: Some(t(at)),
+        }
+    }
+
+    #[test]
+    fn a_request_counts_as_reviewed_once_another_human_reviews() {
+        assert!(reviewed_by_others(&[], &identity()).is_empty());
+        let ignored = [
+            mark("coderabbitai", true, Commented, 1),
+            mark("me-home", false, ChangesRequested, 2),
+            mark("carol", false, Dismissed, 3),
+            mark("dave", false, Pending, 4),
+        ];
+        assert!(reviewed_by_others(&ignored, &identity()).is_empty());
+        let reviews = [
+            mark("raad", false, ChangesRequested, 1),
+            mark("raad", false, Commented, 2),
+            mark("alice", false, Commented, 3),
+            mark("alice", false, Approved, 4),
+            mark("bob", false, Commented, 5),
+        ];
+        let reasons = reviewed_by_others(&reviews, &identity());
+        assert_eq!(
+            reasons,
+            vec![
+                Reason::ChangesRequested {
+                    by: vec!["raad".into()]
+                },
+                Reason::Approved {
+                    by: vec!["alice".into()]
+                },
+                Reason::Reviewed { by: vec!["bob".into()] },
+            ]
+        );
+        assert_eq!(describe(&reasons), "changes: raad · approved: alice · reviewed: bob");
+    }
 
     #[test]
     fn clean_pr_has_no_reasons() {

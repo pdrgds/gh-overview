@@ -110,6 +110,11 @@
               { "requestedReviewer": { "__typename": "Mannequin" } }
             ]
           },
+          "reviews": {
+            "nodes": [
+              { "state": "CHANGES_REQUESTED", "submittedAt": "2026-09-21T08:00:00Z", "author": { "__typename": "User", "login": "raad" } }
+            ]
+          },
           "timelineItems": {
             "nodes": [
               { "id": "RRE_first", "actor": { "login": "dave" }, "requestedReviewer": { "__typename": "User", "login": "me-work" } },

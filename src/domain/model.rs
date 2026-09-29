@@ -96,6 +96,14 @@ pub struct ReviewRequest {
     pub direct: bool,
     pub team: Option<String>,
     pub event: Option<RequestEvent>,
+    pub reviews: Vec<ReviewMark>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewMark {
+    pub author: Author,
+    pub state: ReviewState,
+    pub submitted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

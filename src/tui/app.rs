@@ -32,6 +32,7 @@ pub struct ViewRow {
     pub account: String,
     pub team: Option<String>,
     pub why: String,
+    pub reviewed: bool,
     pub badge: Badge,
     pub is_draft: bool,
 }
@@ -57,6 +58,8 @@ pub struct App {
     pub status: HeaderStatus,
     pub snoozing: bool,
     pub quit: bool,
+    pub show_reviewed: bool,
+    pub reviewed_count: usize,
     selected: HashMap<Tab, String>,
     hidden: HashSet<String>,
     snooze: Vec<SnoozeChoice>,
@@ -73,6 +76,7 @@ fn view_row(row: PrRow, config: &Config, now: DateTime<Utc>, badge: Badge) -> Vi
         account: config.label_for(&row.account).to_string(),
         login: row.account,
         why: describe(&row.reasons),
+        reviewed: row.tab == Tab::Review && !row.reasons.is_empty(),
         key: row.key,
         repo: row.repo,
         number: row.number,
@@ -125,12 +129,20 @@ pub fn review_rows(
         .filter_map(|r| visible_badge(&r.key, alerts, hidden, now).map(|badge| (r, badge)))
         .collect();
     rows.sort_by(|(a, ab), (b, bb)| {
-        (*ab != Badge::Pinging, !a.is_direct, a.created_at, &a.key).cmp(&(
-            *bb != Badge::Pinging,
-            !b.is_direct,
-            b.created_at,
-            &b.key,
-        ))
+        (
+            !a.reasons.is_empty(),
+            *ab != Badge::Pinging,
+            !a.is_direct,
+            a.created_at,
+            &a.key,
+        )
+            .cmp(&(
+                !b.reasons.is_empty(),
+                *bb != Badge::Pinging,
+                !b.is_direct,
+                b.created_at,
+                &b.key,
+            ))
     });
     rows.into_iter()
         .map(|(r, badge)| view_row(r, config, now, badge))
@@ -169,6 +181,8 @@ impl App {
             status: HeaderStatus::default(),
             snoozing: false,
             quit: false,
+            show_reviewed: false,
+            reviewed_count: 0,
             selected: HashMap::new(),
             hidden: HashSet::new(),
             snooze: config.snooze(),
@@ -194,7 +208,12 @@ impl App {
                 .get(key)
                 .is_none_or(|a| a.done_at.is_none() && a.phase(now) == Phase::Idle)
         });
-        self.review = review_rows(db.prs(Tab::Review)?, &alerts, &self.hidden, config, now);
+        let mut review = review_rows(db.prs(Tab::Review)?, &alerts, &self.hidden, config, now);
+        self.reviewed_count = review.iter().filter(|r| r.reviewed).count();
+        if !self.show_reviewed {
+            review.retain(|r| !r.reviewed);
+        }
+        self.review = review;
         self.mine = mine_rows(db.prs(Tab::Mine)?, &alerts, &self.hidden, config, now);
         self.status = header_status(db, config, now)?;
         Ok(())
@@ -304,6 +323,7 @@ impl App {
                 }
             }
             KeyCode::Char('r') => actions.push(Action::Enqueue(Command::Refresh)),
+            KeyCode::Char('a') => self.show_reviewed = !self.show_reviewed,
             _ => {}
         }
         actions
@@ -348,6 +368,9 @@ mod tests {
     fn row(tab: Tab, account: &str, repo: &str, number: u64) -> PrRow {
         let mut r = PrRow::mine(account, &my_pr(repo, number), vec![Reason::Threads { count: 1 }], None);
         r.tab = tab;
+        if tab == Tab::Review {
+            r.reasons.clear();
+        }
         r
     }
 
@@ -702,6 +725,32 @@ mod tests {
         assert!(app.review.is_empty());
         app.load(&db, &config(), t(0)).unwrap();
         assert!(app.review.is_empty());
+    }
+
+    #[test]
+    fn requests_reviewed_by_others_are_hidden_until_toggled_and_listed_last() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let db = store.db();
+        let mut reviewed = row(Tab::Review, "me-work", "acme/a", 1);
+        reviewed.reasons = vec![Reason::ChangesRequested {
+            by: vec!["raad".into()],
+        }];
+        reviewed.created_at = t(-9000);
+        let waiting = row(Tab::Review, "me-work", "acme/b", 2);
+        db.replace_account_prs("me-work", &[reviewed, waiting]).unwrap();
+        let mut app = App::new(&config());
+        app.load(&db, &config(), t(0)).unwrap();
+        let keys = |app: &App| app.review.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&app), vec!["acme/b#2"]);
+        assert_eq!(app.reviewed_count, 1);
+        app.on_key(key(KeyCode::Char('a')), t(0));
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(keys(&app), vec!["acme/b#2", "acme/a#1"]);
+        assert!(app.review[1].reviewed);
+        assert_eq!(app.review[1].why, "changes: raad");
+        app.on_key(key(KeyCode::Char('a')), t(0));
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(keys(&app), vec!["acme/b#2"]);
     }
 
     #[test]

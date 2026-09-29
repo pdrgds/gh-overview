@@ -1,11 +1,11 @@
 ---
 source: src/tui/view.rs
-expression: "draw(&app(), 120, 7).backend()"
+expression: "draw(&needing_review_only(app()), 120, 7).backend()"
 ---
-" gh-overview   [1] To review (2)   [2] My PRs (1)                                                      ● polled 12s ago "
+" gh-overview   [1] To review (2 · 1 reviewed)   [2] My PRs (1)                                         ● polled 12s ago "
 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 "  REPO                         #      TITLE                     AUTHOR         AGE  ALERT      ACCT       VIA           "
 "▶ acme/gateway                 412    [api] add rate limits to… alice          10h  🔔 pinging work                     " Hidden by multi-width symbols: [(85, " ")]
 "  acme/infrastructure          77     PR 77                     bob            10h             work       team:platform "
 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
-" enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit                                        "
+" enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit                                          "

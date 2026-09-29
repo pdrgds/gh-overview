@@ -4,7 +4,7 @@
 
 A terminal overview of the GitHub pull requests waiting on you, across several `gh` accounts, plus a macOS background daemon that notifies you when someone asks for your review or reviews or comments on your PRs, re-notifies every 5 minutes until you act, and lets you snooze.
 
-- **To review**: open PRs where you (or one of your teams) are a requested reviewer.
+- **To review**: open PRs where you (or one of your teams) are a requested reviewer and no one else has reviewed yet. PRs another human already approved, requested changes on or reviewed are hidden; press `a` to list them too, dimmed and labelled (for example `[changes: raad]`).
 - **My PRs**: your open PRs where the ball is in your court: an unresolved review thread where someone else has the last word, changes requested on the current head, or a human comment you haven't answered.
 
 ```
@@ -52,12 +52,13 @@ ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAge
 | `Enter` / `o` | open in browser; on My PRs, and on a review request with an alert, this also acknowledges (pauses pings for 30 minutes) |
 | `s` | snooze the selected PR's alert |
 | `d` | done: hide the PR until new activity arrives (for a review request, until you're asked again) |
+| `a` | show or hide review requests someone else already reviewed |
 | `r` | ask the daemon to poll now |
 | `q` | quit |
 
 Notifications: clicking the body opens the PR and pauses the pings for 30 minutes (`remind_after_open`), after which they resume if the PR still needs you; a Snooze choice from the notification's Options menu pauses them; closing the notification does not count as acting, so it pings again after 5 minutes. Pings stop on their own once the PR no longer needs you (threads resolved, you pushed after a changes request, or you replied). Approvals and other news that leave nothing to do notify once, without a Snooze button. Empty bot reviews (for example a CodeRabbit pass with no new comments) don't notify at all.
 
-Review requests ping the same way: a new request for your review notifies and re-notifies every 5 minutes until it leaves your To review list (you reviewed, the request was removed, or the PR closed), with the same Open and Snooze behaviour. Requests that were already waiting when the daemon first saw your account stay quiet, drafts and bot-authored PRs never ping, and requests to one of your teams ping only with `notify_team_requests = true` (turning it on doesn't ping the team requests already waiting). The notification names who asked, and a new request (someone re-requests your review) notifies again even while the PR is still in your list.
+Review requests ping the same way: a new request for your review notifies and re-notifies every 5 minutes until it leaves your To review list (you reviewed, the request was removed, or the PR closed), with the same Open and Snooze behaviour. Requests that were already waiting when the daemon first saw your account stay quiet, drafts, bot-authored PRs and PRs someone else already reviewed never ping (a pinging request stops once someone else reviews it), and requests to one of your teams ping only with `notify_team_requests = true` (turning it on doesn't ping the team requests already waiting). The notification names who asked, and a new request (someone re-requests your review) notifies again even while the PR is still in your list.
 
 ## Configuration
 

@@ -54,6 +54,13 @@ query Overview($mine: String!, $review: String!) {
             }
           }
         }
+        reviews(last: 30) {
+          nodes {
+            state
+            submittedAt
+            author { __typename login }
+          }
+        }
         timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
           nodes {
             ... on ReviewRequestedEvent {

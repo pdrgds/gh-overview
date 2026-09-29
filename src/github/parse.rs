@@ -3,7 +3,8 @@ use serde::Deserialize;
 
 use super::FetchError;
 use crate::domain::model::{
-    AccountSnapshot, Author, Comment, MyPr, PrBase, RequestEvent, Review, ReviewRequest, ReviewState, Thread,
+    AccountSnapshot, Author, Comment, MyPr, PrBase, RequestEvent, Review, ReviewMark, ReviewRequest, ReviewState,
+    Thread,
 };
 
 #[derive(Deserialize)]
@@ -141,7 +142,17 @@ struct RawReviewPr {
     base: RawBase,
     review_requests: Conn<RawRequest>,
     #[serde(default)]
+    reviews: Option<Conn<RawReviewMark>>,
+    #[serde(default)]
     timeline_items: Option<Conn<RawRequestEvent>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawReviewMark {
+    state: ReviewState,
+    submitted_at: Option<DateTime<Utc>>,
+    author: Option<RawActor>,
 }
 
 #[derive(Deserialize)]
@@ -282,11 +293,24 @@ fn review_request(raw: RawReviewPr, login: &str) -> ReviewRequest {
             actor: author(e.actor).login,
         })
     });
+    let reviews = raw
+        .reviews
+        .map(|c| c.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .map(|r| ReviewMark {
+            author: author(r.author),
+            state: r.state,
+            submitted_at: r.submitted_at,
+        })
+        .collect();
     ReviewRequest {
         base: base(raw.base),
         direct,
         team,
         event,
+        reviews,
     }
 }
 
@@ -406,6 +430,15 @@ mod tests {
                 actor: "erin".into()
             })
         );
+        assert_eq!(
+            direct.reviews,
+            vec![ReviewMark {
+                author: Author::user("raad"),
+                state: ReviewState::ChangesRequested,
+                submitted_at: Some("2026-09-21T08:00:00Z".parse().unwrap()),
+            }]
+        );
+        assert!(team.reviews.is_empty());
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::domain::activity::{ActivityItem, ActivityKind, activity_of};
 use crate::domain::actors::Identity;
 use crate::domain::alert::{AlertState, Effect, Event, Phase, step};
 use crate::domain::model::{AccountSnapshot, Author, PrBase, ReviewRequest};
-use crate::domain::reasons::reasons;
+use crate::domain::reasons::{reasons, reviewed_by_others};
 use crate::domain::snooze::SnoozeChoice;
 use crate::github::client::GithubSource;
 use crate::notify::{Delivered, Notification, Notifier, Response};
@@ -84,7 +84,9 @@ fn pings_for(request: &ReviewRequest, identity: &Identity, notify_team: bool) ->
         login: request.base.author.clone(),
         is_bot_type: request.base.author_is_bot,
     };
-    (request.direct || notify_team) && !identity.is_bot(&author)
+    (request.direct || notify_team)
+        && !identity.is_bot(&author)
+        && reviewed_by_others(&request.reviews, identity).is_empty()
 }
 
 pub fn new_warnings<'a>(previous: &[String], current: &'a [String]) -> Vec<&'a String> {
@@ -257,7 +259,9 @@ impl Daemon {
                 pending.push((key, PrInfo::of(&login, &pr.base), effects));
             }
             for request in &snapshot.to_review {
-                rows.push(PrRow::review(&login, request));
+                let mut row = PrRow::review(&login, request);
+                row.reasons = reviewed_by_others(&request.reviews, identity);
+                rows.push(row);
             }
             let mut kept = Vec::new();
             let searches = [
@@ -475,7 +479,7 @@ impl Daemon {
         Ok(db
             .prs_for(Tab::Review, key)?
             .iter()
-            .any(|r| (r.is_direct || self.config.notify_team_requests) && !r.is_draft))
+            .any(|r| (r.is_direct || self.config.notify_team_requests) && !r.is_draft && r.reasons.is_empty()))
     }
 
     fn row_for(&self, key: &str) -> Result<Option<PrRow>> {

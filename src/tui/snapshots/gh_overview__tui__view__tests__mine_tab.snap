@@ -2,9 +2,9 @@
 source: src/tui/view.rs
 expression: "draw(&app, 120, 6).backend()"
 ---
-" gh-overview   [1] To review (2)   [2] My PRs (1)                                                      ● polled 12s ago "
+" gh-overview   [1] To review (2 · 1 reviewed)   [2] My PRs (1)                                         ● polled 12s ago "
 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 "  REPO                         #      TITLE                         WHY                            ALERT      ACCT      "
 "▶ octocat/dotfiles             310    [draft] PR 310                3 threads · changes: alice     🔔 pinging personal  " Hidden by multi-width symbols: [(100, " ")]
 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
-" enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit                                        "
+" enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit                                          "

@@ -174,6 +174,7 @@ mod tests {
                 direct: false,
                 team: Some("fe".into()),
                 event: None,
+                reviews: vec![],
             }],
             truncated: vec!["acme/web#9: more than 50 reviews, older ones ignored".into()],
             ..Default::default()
@@ -231,6 +232,7 @@ mod tests {
                 direct: true,
                 team: Some("fe".into()),
                 event: None,
+                reviews: vec![],
             }],
             withheld_mine: true,
             ..Default::default()

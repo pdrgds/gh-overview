@@ -11,7 +11,7 @@ use crate::store::Tab;
 
 const HIGHLIGHT: &str = "▶ ";
 const SPACING: u16 = 1;
-const FOOTER: &str = " enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit";
+const FOOTER: &str = " enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit";
 
 pub fn render(frame: &mut Frame, app: &App) {
     let warnings: Vec<&String> = app.status.errors.iter().chain(app.status.degraded.iter()).collect();
@@ -45,6 +45,15 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 }
 
+fn review_label(app: &App) -> String {
+    let needs = app.review.iter().filter(|r| !r.reviewed).count();
+    if app.reviewed_count == 0 {
+        format!("[1] To review ({needs})")
+    } else {
+        format!("[1] To review ({needs} · {} reviewed)", app.reviewed_count)
+    }
+}
+
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let tab = |label: String, active: bool| {
         let style = if active {
@@ -56,7 +65,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     };
     let left = Line::from(vec![
         Span::styled(" gh-overview   ", Style::new().add_modifier(Modifier::BOLD)),
-        tab(format!("[1] To review ({})", app.review.len()), app.tab == Tab::Review),
+        tab(review_label(app), app.tab == Tab::Review),
         Span::raw("   "),
         tab(format!("[2] My PRs ({})", app.mine.len()), app.tab == Tab::Mine),
     ]);
@@ -181,13 +190,20 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     header.insert(2, "TITLE");
     let rows = app.rows().iter().map(|r| {
         let mut cells: Vec<Cell> = cols.iter().map(|c| Cell::from((c.cell)(r))).collect();
-        let title = if r.is_draft {
-            format!("[draft] {}", r.title)
-        } else {
-            r.title.clone()
-        };
+        let mut title = r.title.clone();
+        if r.is_draft {
+            title = format!("[draft] {title}");
+        }
+        if r.reviewed {
+            title = format!("[{}] {title}", r.why);
+        }
         cells.insert(2, Cell::from(truncate(&title, title_width)));
-        Row::new(cells)
+        let row = Row::new(cells);
+        if r.reviewed {
+            row.style(Style::new().fg(Color::DarkGray))
+        } else {
+            row
+        }
     });
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(Style::new().add_modifier(Modifier::BOLD)))
@@ -250,6 +266,7 @@ mod tests {
                 direct: true,
                 team: None,
                 event: None,
+                reviews: vec![],
             },
         );
         a.title = "[api] add rate limits to the public gateway endpoints".into();
@@ -261,9 +278,25 @@ mod tests {
                 direct: false,
                 team: Some("platform".into()),
                 event: None,
+                reviews: vec![],
             },
         );
         b.author = "bob".into();
+        let mut c = PrRow::review(
+            "me-work",
+            &crate::domain::model::ReviewRequest {
+                base: base("acme/web", 1719),
+                direct: true,
+                team: None,
+                event: None,
+                reviews: vec![],
+            },
+        );
+        c.title = "content transfer between environments".into();
+        c.author = "sam".into();
+        c.reasons = vec![Reason::ChangesRequested {
+            by: vec!["raad".into()],
+        }];
         let review_alerts = HashMap::from([(
             "acme/gateway#412".to_string(),
             AlertState {
@@ -271,7 +304,9 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        app.review = review_rows(vec![a, b], &review_alerts, &HashSet::new(), &config, t(0));
+        app.review = review_rows(vec![a, b, c], &review_alerts, &HashSet::new(), &config, t(0));
+        app.reviewed_count = 1;
+        app.show_reviewed = true;
         let mut m = PrRow::mine(
             "me-home",
             &my_pr("octocat/dotfiles", 310),
@@ -308,14 +343,25 @@ mod tests {
         terminal
     }
 
+    fn needing_review_only(mut app: App) -> App {
+        app.show_reviewed = false;
+        app.review.retain(|r| !r.reviewed);
+        app
+    }
+
     #[test]
     fn review_tab() {
-        insta::assert_snapshot!(draw(&app(), 120, 7).backend());
+        insta::assert_snapshot!(draw(&needing_review_only(app()), 120, 7).backend());
     }
 
     #[test]
     fn review_tab_narrow() {
-        insta::assert_snapshot!(draw(&app(), 80, 7).backend());
+        insta::assert_snapshot!(draw(&needing_review_only(app()), 80, 7).backend());
+    }
+
+    #[test]
+    fn review_tab_showing_reviewed() {
+        insta::assert_snapshot!(draw(&app(), 120, 8).backend());
     }
 
     #[test]

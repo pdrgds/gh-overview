@@ -275,6 +275,7 @@ mod tests {
             direct: false,
             team: Some("fe".into()),
             event: None,
+            reviews: vec![],
         };
         let row = PrRow::review("work", &request);
         assert_eq!(

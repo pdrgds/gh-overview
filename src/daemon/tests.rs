@@ -6,7 +6,8 @@ use chrono::Duration;
 
 use super::*;
 use crate::clock::FakeClock;
-use crate::domain::model::{Author, MyPr, RequestEvent, ReviewState};
+use crate::domain::model::{Author, MyPr, RequestEvent, ReviewMark, ReviewState};
+use crate::domain::reasons::Reason;
 use crate::domain::testkit::*;
 use crate::github::FetchError;
 
@@ -132,6 +133,7 @@ fn request(repo: &str, number: u64) -> ReviewRequest {
             id: format!("RRE_{number}"),
             actor: "dave".into(),
         }),
+        reviews: vec![],
     }
 }
 
@@ -432,6 +434,7 @@ fn withheld_results_keep_missing_prs_for_a_grace_period() {
         direct: true,
         team: None,
         event: None,
+        reviews: vec![],
     };
     h.github.push(Ok(AccountSnapshot {
         login: "me-work".into(),
@@ -483,6 +486,7 @@ fn withheld_rows_are_kept_per_tab_and_until_exactly_the_grace_period() {
         direct: true,
         team: None,
         event: None,
+        reviews: vec![],
     };
     h.github.push(Ok(AccountSnapshot {
         login: "me-work".into(),
@@ -808,6 +812,7 @@ fn rows_of_accounts_removed_from_the_config_are_pruned() {
             direct: true,
             team: None,
             event: None,
+            reviews: vec![],
         },
     );
     h.daemon
@@ -1090,4 +1095,41 @@ fn a_request_whose_event_is_out_of_reach_does_not_ping_twice() {
         shown_keys(h.notifier.take()),
         vec![("acme/web#9".into(), 1, "dave requested your review".into())]
     );
+}
+
+fn reviewed_by_raad(mut r: ReviewRequest) -> ReviewRequest {
+    r.reviews = vec![ReviewMark {
+        author: Author::user("raad"),
+        state: ReviewState::ChangesRequested,
+        submitted_at: Some(t(0)),
+    }];
+    r
+}
+
+#[test]
+fn a_request_someone_else_already_reviewed_does_not_ping() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![reviewed_by_raad(request("acme/web", 7))]);
+    assert!(h.notifier.take().is_empty());
+    let row = h.daemon.store.db().pr(Tab::Review, "acme/web#7").unwrap().unwrap();
+    assert_eq!(
+        row.reasons,
+        vec![Reason::ChangesRequested {
+            by: vec!["raad".into()]
+        }]
+    );
+}
+
+#[test]
+fn pings_stop_once_someone_else_reviews() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.notifier.take();
+    h.clock.advance(Duration::minutes(2));
+    h.poll_requests(vec![reviewed_by_raad(request("acme/web", 7))]);
+    h.daemon.tick().unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/web#7".into())]);
+    h.clock.advance(Duration::minutes(10));
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
 }
