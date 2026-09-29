@@ -32,12 +32,13 @@ pub fn reasons(pr: &MyPr, id: &Identity) -> Vec<Reason> {
     out
 }
 
-pub fn reviewed_by_others(reviews: &[ReviewMark], id: &Identity) -> Vec<Reason> {
+pub fn reviewed_by_others(reviews: &[ReviewMark], pr_author: &str, id: &Identity) -> Vec<Reason> {
     let mut ordered: Vec<&ReviewMark> = reviews.iter().filter(|r| r.submitted_at.is_some()).collect();
     ordered.sort_by_key(|r| r.submitted_at);
     let mut latest: BTreeMap<&str, ReviewState> = BTreeMap::new();
     for r in ordered {
-        if id.is_me(&r.author.login) || id.is_bot(&r.author) {
+        let author = &r.author.login;
+        if id.is_me(author) || id.is_bot(&r.author) || author.eq_ignore_ascii_case(pr_author) {
             continue;
         }
         match r.state {
@@ -161,14 +162,15 @@ mod tests {
 
     #[test]
     fn a_request_counts_as_reviewed_once_another_human_reviews() {
-        assert!(reviewed_by_others(&[], &identity()).is_empty());
+        assert!(reviewed_by_others(&[], "sam", &identity()).is_empty());
         let ignored = [
             mark("coderabbitai", true, Commented, 1),
             mark("me-home", false, ChangesRequested, 2),
             mark("carol", false, Dismissed, 3),
             mark("dave", false, Pending, 4),
+            mark("Sam", false, Commented, 5),
         ];
-        assert!(reviewed_by_others(&ignored, &identity()).is_empty());
+        assert!(reviewed_by_others(&ignored, "sam", &identity()).is_empty());
         let reviews = [
             mark("raad", false, ChangesRequested, 1),
             mark("raad", false, Commented, 2),
@@ -176,7 +178,7 @@ mod tests {
             mark("alice", false, Approved, 4),
             mark("bob", false, Commented, 5),
         ];
-        let reasons = reviewed_by_others(&reviews, &identity());
+        let reasons = reviewed_by_others(&reviews, "sam", &identity());
         assert_eq!(
             reasons,
             vec![

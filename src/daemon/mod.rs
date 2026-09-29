@@ -86,7 +86,7 @@ fn pings_for(request: &ReviewRequest, identity: &Identity, notify_team: bool) ->
     };
     (request.direct || notify_team)
         && !identity.is_bot(&author)
-        && reviewed_by_others(&request.reviews, identity).is_empty()
+        && reviewed_by_others(&request.reviews, &request.base.author, identity).is_empty()
 }
 
 pub fn new_warnings<'a>(previous: &[String], current: &'a [String]) -> Vec<&'a String> {
@@ -260,7 +260,7 @@ impl Daemon {
             }
             for request in &snapshot.to_review {
                 let mut row = PrRow::review(&login, request);
-                row.reasons = reviewed_by_others(&request.reviews, identity);
+                row.reasons = reviewed_by_others(&request.reviews, &request.base.author, identity);
                 rows.push(row);
             }
             let mut kept = Vec::new();
