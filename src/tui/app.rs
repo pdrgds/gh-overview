@@ -85,7 +85,32 @@ fn view_row(row: PrRow, config: &Config, now: DateTime<Utc>, badge: Badge) -> Vi
     }
 }
 
-pub fn review_rows(rows: Vec<PrRow>, config: &Config, now: DateTime<Utc>) -> Vec<ViewRow> {
+fn visible_badge(
+    key: &str,
+    alerts: &HashMap<String, AlertState>,
+    hidden: &HashSet<String>,
+    now: DateTime<Utc>,
+) -> Option<Badge> {
+    let state = alerts.get(key).cloned().unwrap_or_default();
+    let phase = state.phase(now);
+    if state.done_at.is_some() || (phase == Phase::Idle && hidden.contains(key)) {
+        return None;
+    }
+    Some(match phase {
+        Phase::Idle => Badge::None,
+        Phase::Pinging => Badge::Pinging,
+        Phase::Snoozed => Badge::Snoozed(state.snoozed_until.expect("snoozed has until")),
+        Phase::Acked => Badge::Seen,
+    })
+}
+
+pub fn review_rows(
+    rows: Vec<PrRow>,
+    alerts: &HashMap<String, AlertState>,
+    hidden: &HashSet<String>,
+    config: &Config,
+    now: DateTime<Utc>,
+) -> Vec<ViewRow> {
     let mut by_key: HashMap<String, PrRow> = HashMap::new();
     for row in rows {
         let keep = by_key
@@ -95,10 +120,20 @@ pub fn review_rows(rows: Vec<PrRow>, config: &Config, now: DateTime<Utc>) -> Vec
             by_key.insert(row.key.clone(), row);
         }
     }
-    let mut rows: Vec<PrRow> = by_key.into_values().collect();
-    rows.sort_by(|a, b| (!a.is_direct, a.created_at, &a.key).cmp(&(!b.is_direct, b.created_at, &b.key)));
+    let mut rows: Vec<(PrRow, Badge)> = by_key
+        .into_values()
+        .filter_map(|r| visible_badge(&r.key, alerts, hidden, now).map(|badge| (r, badge)))
+        .collect();
+    rows.sort_by(|(a, ab), (b, bb)| {
+        (*ab != Badge::Pinging, !a.is_direct, a.created_at, &a.key).cmp(&(
+            *bb != Badge::Pinging,
+            !b.is_direct,
+            b.created_at,
+            &b.key,
+        ))
+    });
     rows.into_iter()
-        .map(|r| view_row(r, config, now, Badge::None))
+        .map(|(r, badge)| view_row(r, config, now, badge))
         .collect()
 }
 
@@ -111,20 +146,7 @@ pub fn mine_rows(
 ) -> Vec<ViewRow> {
     let mut rows: Vec<(PrRow, Badge)> = rows
         .into_iter()
-        .filter_map(|r| {
-            let state = alerts.get(&r.key).cloned().unwrap_or_default();
-            let phase = state.phase(now);
-            if state.done_at.is_some() || (phase == Phase::Idle && hidden.contains(&r.key)) {
-                return None;
-            }
-            let badge = match phase {
-                Phase::Idle => Badge::None,
-                Phase::Pinging => Badge::Pinging,
-                Phase::Snoozed => Badge::Snoozed(state.snoozed_until.expect("snoozed has until")),
-                Phase::Acked => Badge::Seen,
-            };
-            Some((r, badge))
-        })
+        .filter_map(|r| visible_badge(&r.key, alerts, hidden, now).map(|badge| (r, badge)))
         .collect();
     rows.sort_by(|(a, ab), (b, bb)| {
         (*ab != Badge::Pinging, std::cmp::Reverse(a.last_activity_at), &a.key).cmp(&(
@@ -172,7 +194,7 @@ impl App {
                 .get(key)
                 .is_none_or(|a| a.done_at.is_none() && a.phase(now) == Phase::Idle)
         });
-        self.review = review_rows(db.prs(Tab::Review)?, config, now);
+        self.review = review_rows(db.prs(Tab::Review)?, &alerts, &self.hidden, config, now);
         self.mine = mine_rows(db.prs(Tab::Mine)?, &alerts, &self.hidden, config, now);
         self.status = header_status(db, config, now)?;
         Ok(())
@@ -260,7 +282,7 @@ impl App {
                         login: row.login.clone(),
                         url: row.url.clone(),
                     });
-                    if self.tab == Tab::Mine {
+                    if self.tab == Tab::Mine || row.badge != Badge::None {
                         let remind_at = now + self.remind_after_open;
                         self.predict(&row.key, Event::Ack { remind_at }, now);
                         actions.push(Action::Enqueue(Command::Ack { pr_key: row.key }));
@@ -268,14 +290,16 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                if self.tab == Tab::Mine && selected.is_some_and(|r| r.badge != Badge::None) {
+                if selected.is_some_and(|r| r.badge != Badge::None) {
                     self.snoozing = true;
                 }
             }
             KeyCode::Char('d') => {
-                if let (Tab::Mine, Some(row)) = (self.tab, selected) {
+                if let Some(row) = selected {
+                    self.predict(&row.key, Event::Done, now);
                     self.hidden.insert(row.key.clone());
                     self.mine.retain(|r| r.key != row.key);
+                    self.review.retain(|r| r.key != row.key);
                     actions.push(Action::Enqueue(Command::Done { pr_key: row.key }));
                 }
             }
@@ -343,7 +367,13 @@ mod tests {
         old_team.created_at = t(-5000);
         let mut new_direct = row(Tab::Review, "me-work", "acme/c", 3);
         new_direct.created_at = t(-10);
-        let rows = review_rows(vec![team, direct_dup, old_team, new_direct], &config(), t(0));
+        let rows = review_rows(
+            vec![team, direct_dup, old_team, new_direct],
+            &HashMap::new(),
+            &HashSet::new(),
+            &config(),
+            t(0),
+        );
         let keys: Vec<(&str, &str)> = rows.iter().map(|r| (r.key.as_str(), r.account.as_str())).collect();
         assert_eq!(
             keys,
@@ -635,6 +665,46 @@ mod tests {
     }
 
     #[test]
+    fn a_pinging_review_request_can_be_opened_snoozed_and_dismissed() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let db = store.db();
+        let mut requested = row(Tab::Review, "me-work", "acme/r", 9);
+        requested.is_direct = true;
+        db.replace_account_prs("me-work", &[requested]).unwrap();
+        db.put_alert(
+            "acme/r#9",
+            &AlertState {
+                cycle_started_at: Some(t(0)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut app = App::new(&config());
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.review[0].badge, Badge::Pinging);
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter), t(0))[1],
+            Action::Enqueue(Command::Ack {
+                pr_key: "acme/r#9".into()
+            })
+        );
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.review[0].badge, Badge::Seen);
+        app.on_key(key(KeyCode::Char('s')), t(0));
+        assert!(app.snoozing);
+        app.on_key(key(KeyCode::Esc), t(0));
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('d')), t(0)),
+            vec![Action::Enqueue(Command::Done {
+                pr_key: "acme/r#9".into()
+            })]
+        );
+        assert!(app.review.is_empty());
+        app.load(&db, &config(), t(0)).unwrap();
+        assert!(app.review.is_empty());
+    }
+
+    #[test]
     fn ctrl_c_quits_even_with_the_snooze_popup_open() {
         let mut app = app_with_mine();
         app.on_key(key(KeyCode::Char('s')), t(0));
@@ -646,7 +716,13 @@ mod tests {
     #[test]
     fn enter_on_review_opens_without_acknowledging() {
         let mut app = App::new(&config());
-        app.review = review_rows(vec![row(Tab::Review, "me-work", "acme/a", 1)], &config(), t(0));
+        app.review = review_rows(
+            vec![row(Tab::Review, "me-work", "acme/a", 1)],
+            &HashMap::new(),
+            &HashSet::new(),
+            &config(),
+            t(0),
+        );
         assert_eq!(
             app.on_key(key(KeyCode::Enter), t(0)),
             vec![Action::Open {

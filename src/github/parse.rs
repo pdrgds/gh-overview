@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use super::FetchError;
 use crate::domain::model::{
-    AccountSnapshot, Author, Comment, MyPr, PrBase, Review, ReviewRequest, ReviewState, Thread,
+    AccountSnapshot, Author, Comment, MyPr, PrBase, RequestEvent, Review, ReviewRequest, ReviewState, Thread,
 };
 
 #[derive(Deserialize)]
@@ -140,6 +140,16 @@ struct RawReviewPr {
     #[serde(flatten)]
     base: RawBase,
     review_requests: Conn<RawRequest>,
+    #[serde(default)]
+    timeline_items: Option<Conn<RawRequestEvent>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRequestEvent {
+    id: Option<String>,
+    actor: Option<RawActor>,
+    requested_reviewer: Option<RawReviewer>,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +189,10 @@ fn base(raw: RawBase) -> PrBase {
         number: raw.number,
         title: raw.title,
         url: raw.url,
+        author_is_bot: raw
+            .author
+            .as_ref()
+            .is_some_and(|a| a.typename.as_deref() == Some("Bot")),
         author: raw.author.map_or_else(|| GHOST.to_string(), |a| a.login),
         is_draft: raw.is_draft,
         created_at: raw.created_at,
@@ -253,10 +267,26 @@ fn review_request(raw: RawReviewPr, login: &str) -> ReviewRequest {
             _ => {}
         }
     }
+    let events = raw.timeline_items.map(|c| c.nodes).unwrap_or_default();
+    let event = events.into_iter().flatten().rev().find_map(|e| {
+        let asked_me = match (&e.requested_reviewer, &team) {
+            (Some(RawReviewer::User { login: l }), _) => direct && l.eq_ignore_ascii_case(login),
+            (Some(RawReviewer::Team { slug }), Some(wanted)) => !direct && slug == wanted,
+            _ => false,
+        };
+        if !asked_me {
+            return None;
+        }
+        Some(RequestEvent {
+            id: e.id?,
+            actor: author(e.actor).login,
+        })
+    });
     ReviewRequest {
         base: base(raw.base),
         direct,
         team,
+        event,
     }
 }
 
@@ -357,9 +387,25 @@ mod tests {
         let snap = parse_response("me-work", FIXTURE).unwrap();
         let team = &snap.to_review[0];
         assert_eq!((team.direct, team.team.as_deref()), (false, Some("platform")));
+        assert!(team.base.author_is_bot);
+        assert_eq!(
+            team.event,
+            Some(RequestEvent {
+                id: "RRE_old".into(),
+                actor: "carol".into()
+            })
+        );
         let direct = &snap.to_review[1];
         assert_eq!((direct.direct, direct.team.as_deref()), (true, None));
         assert_eq!(direct.base.author, "dave");
+        assert!(!direct.base.author_is_bot);
+        assert_eq!(
+            direct.event,
+            Some(RequestEvent {
+                id: "RRE_again".into(),
+                actor: "erin".into()
+            })
+        );
     }
 
     #[test]

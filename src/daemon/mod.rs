@@ -11,10 +11,10 @@ use tracing::warn;
 
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::domain::activity::{ActivityItem, activity_of};
+use crate::domain::activity::{ActivityItem, ActivityKind, activity_of};
 use crate::domain::actors::Identity;
 use crate::domain::alert::{AlertState, Effect, Event, Phase, step};
-use crate::domain::model::{AccountSnapshot, PrBase};
+use crate::domain::model::{AccountSnapshot, Author, PrBase, ReviewRequest};
 use crate::domain::reasons::reasons;
 use crate::domain::snooze::SnoozeChoice;
 use crate::github::client::GithubSource;
@@ -77,6 +77,14 @@ pub struct Daemon {
     resync: bool,
     withheld_since: HashMap<String, DateTime<Utc>>,
     truncated: HashMap<String, Vec<String>>,
+}
+
+fn pings_for(request: &ReviewRequest, identity: &Identity, notify_team: bool) -> bool {
+    let author = Author {
+        login: request.base.author.clone(),
+        is_bot_type: request.base.author_is_bot,
+    };
+    (request.direct || notify_team) && !identity.is_bot(&author)
 }
 
 pub fn new_warnings<'a>(previous: &[String], current: &'a [String]) -> Vec<&'a String> {
@@ -201,6 +209,7 @@ impl Daemon {
         let login = snapshot.login.clone();
         let identity = &self.identity;
         let renotify = self.config.renotify();
+        let notify_team = self.config.notify_team_requests;
         let withheld_since = &self.withheld_since;
         let (pending, kept) = self.store.tx(|db| {
             let bootstrapped_key = format!("bootstrapped:{login}");
@@ -278,6 +287,68 @@ impl Daemon {
                     }
                 }
             }
+            let requests_key = format!("review_events_bootstrapped:{login}");
+            let requests_bootstrapped = db.meta(&requests_key)?.is_some();
+            let was_draft: HashSet<String> = db
+                .prs(Tab::Review)?
+                .into_iter()
+                .filter(|r| r.account == login && r.is_draft)
+                .map(|r| r.key)
+                .collect();
+            let prefix = format!("rr:{login}:");
+            for request in &snapshot.to_review {
+                if request.base.is_draft {
+                    continue;
+                }
+                let key = request.base.key();
+                let (marker, seen) = match &request.event {
+                    Some(event) => {
+                        let marker = format!("{prefix}{}", event.id);
+                        let seen = db.is_seen(&marker)?;
+                        (marker, seen)
+                    }
+                    None => (format!("{prefix}{key}"), db.has_marker(&key, &prefix)?),
+                };
+                let back_from_draft = seen && was_draft.contains(&key) && db.alert(&key)?.done_at.is_none();
+                if seen && !back_from_draft {
+                    continue;
+                }
+                db.mark_seen(&key, &marker, now)?;
+                if !requests_bootstrapped || !pings_for(request, identity, notify_team) {
+                    continue;
+                }
+                let item = ActivityItem {
+                    id: marker,
+                    kind: if request.direct {
+                        ActivityKind::ReviewRequest
+                    } else {
+                        ActivityKind::TeamReviewRequest
+                    },
+                    actor: request
+                        .event
+                        .as_ref()
+                        .map_or(&request.base.author, |e| &e.actor)
+                        .clone(),
+                    review_state: None,
+                    comment_count: 0,
+                    at: now,
+                };
+                let state = db.alert(&key)?;
+                let (next, effects) = step(
+                    &state,
+                    Event::NewActivity {
+                        items: vec![item],
+                        untackled: true,
+                    },
+                    now,
+                    renotify,
+                );
+                db.put_alert(&key, &next)?;
+                pending.push((key, PrInfo::of(&login, &request.base), effects));
+            }
+            if !requests_bootstrapped {
+                db.set_meta(&requests_key, &now.to_rfc3339())?;
+            }
             db.replace_account_prs(&login, &rows)?;
             db.set_meta(&format!("last_poll:{login}"), &now.to_rfc3339())?;
             if snapshot.errors.is_empty() {
@@ -309,19 +380,13 @@ impl Daemon {
         let alerts = self.store.db().alerts()?;
         let resync = std::mem::take(&mut self.resync);
         for (key, state) in alerts {
-            let row = self.store.db().pr(Tab::Mine, &key)?;
+            let row = self.row_for(&key)?;
+            let untackled = self.needs_you(&key)?;
             let mut current = state.clone();
             if resync && state.phase(now) == Phase::Pinging && !self.live.contains_key(&key) {
                 current.last_notified_at = None;
             }
-            let (next, effects) = step(
-                &current,
-                Event::Tick {
-                    untackled: row.is_some(),
-                },
-                now,
-                renotify,
-            );
+            let (next, effects) = step(&current, Event::Tick { untackled }, now, renotify);
             let stale = row.is_none()
                 && next.phase(now) == Phase::Idle
                 && next.last_notified_at.is_none_or(|t| now - t > STALE_ALERT);
@@ -402,16 +467,28 @@ impl Daemon {
         }
     }
 
+    fn needs_you(&self, key: &str) -> Result<bool> {
+        let db = self.store.db();
+        if db.pr(Tab::Mine, key)?.is_some() {
+            return Ok(true);
+        }
+        Ok(db
+            .prs_for(Tab::Review, key)?
+            .iter()
+            .any(|r| (r.is_direct || self.config.notify_team_requests) && !r.is_draft))
+    }
+
+    fn row_for(&self, key: &str) -> Result<Option<PrRow>> {
+        let db = self.store.db();
+        match db.pr(Tab::Mine, key)? {
+            Some(row) => Ok(Some(row)),
+            None => db.pr(Tab::Review, key),
+        }
+    }
+
     fn info_for(&self, key: &str, info: Option<PrInfo>) -> Option<PrInfo> {
-        info.or_else(|| self.live.get(key).cloned()).or_else(|| {
-            self.store
-                .db()
-                .pr(Tab::Mine, key)
-                .ok()
-                .flatten()
-                .as_ref()
-                .map(PrInfo::from)
-        })
+        info.or_else(|| self.live.get(key).cloned())
+            .or_else(|| self.row_for(key).ok().flatten().as_ref().map(PrInfo::from))
     }
 
     fn apply_effects(&mut self, key: &str, info: Option<PrInfo>, effects: Vec<Effect>) {

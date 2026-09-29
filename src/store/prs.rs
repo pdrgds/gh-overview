@@ -179,6 +179,22 @@ impl Db<'_> {
             .collect())
     }
 
+    pub fn prs_for(&self, tab: Tab, key: &str) -> Result<Vec<PrRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM prs WHERE tab = ?1 AND key = ?2 ORDER BY account"
+        ))?;
+        let rows = stmt.query_map(params![tab.as_str(), key], from_row)?;
+        Ok(rows
+            .filter_map(|r| match r.map_err(anyhow::Error::from).and_then(with_reasons) {
+                Ok(row) => Some(row),
+                Err(err) => {
+                    warn!("skipping unreadable PR row {key}: {err:#}");
+                    None
+                }
+            })
+            .collect())
+    }
+
     pub fn pr(&self, tab: Tab, key: &str) -> Result<Option<PrRow>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {COLUMNS} FROM prs WHERE tab = ?1 AND key = ?2 ORDER BY account LIMIT 1"
@@ -258,6 +274,7 @@ mod tests {
             base: base("acme/web", 5),
             direct: false,
             team: Some("fe".into()),
+            event: None,
         };
         let row = PrRow::review("work", &request);
         assert_eq!(

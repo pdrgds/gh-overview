@@ -10,6 +10,8 @@ use super::reasons::plural;
 pub enum ActivityKind {
     Review,
     Comment,
+    ReviewRequest,
+    TeamReviewRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +68,12 @@ pub fn summarize(items: &[ActivityItem]) -> String {
         .iter()
         .map(|actor| {
             let theirs: Vec<&ActivityItem> = items.iter().filter(|i| i.actor == *actor).collect();
+            if theirs.iter().any(|i| i.kind == ActivityKind::ReviewRequest) {
+                return format!("{actor} requested your review");
+            }
+            if theirs.iter().any(|i| i.kind == ActivityKind::TeamReviewRequest) {
+                return format!("{actor} requested a review from your team");
+            }
             let latest_decision = theirs.iter().rev().find_map(|i| match i.review_state {
                 Some(state @ (ReviewState::ChangesRequested | ReviewState::Approved)) => Some(state),
                 _ => None,
@@ -92,6 +100,26 @@ mod tests {
     use super::*;
     use crate::domain::model::{Author, ReviewState::*};
     use crate::domain::testkit::*;
+
+    #[test]
+    fn review_requests_are_summarized_by_who_asked() {
+        let request = |id: &str, kind| ActivityItem {
+            id: id.to_string(),
+            kind,
+            actor: "dave".into(),
+            review_state: None,
+            comment_count: 0,
+            at: t(0),
+        };
+        assert_eq!(
+            summarize(&[request("rr:1", ActivityKind::ReviewRequest)]),
+            "dave requested your review"
+        );
+        assert_eq!(
+            summarize(&[request("rr:2", ActivityKind::TeamReviewRequest)]),
+            "dave requested a review from your team"
+        );
+    }
 
     #[test]
     fn activity_includes_bot_reviews_but_only_human_comments_and_never_mine() {

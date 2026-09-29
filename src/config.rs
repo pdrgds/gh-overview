@@ -32,6 +32,8 @@ pub struct Config {
     pub snooze_choices: Vec<String>,
     #[serde(default)]
     pub extra_bots: Vec<String>,
+    #[serde(default)]
+    pub notify_team_requests: bool,
     pub accounts: Vec<Account>,
 }
 
@@ -64,6 +66,7 @@ impl Config {
             tomorrow_hour: default_tomorrow_hour(),
             snooze_choices: default_snooze(),
             extra_bots: vec![],
+            notify_team_requests: false,
             accounts: logins
                 .into_iter()
                 .map(|login| Account {

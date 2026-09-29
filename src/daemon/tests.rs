@@ -6,7 +6,7 @@ use chrono::Duration;
 
 use super::*;
 use crate::clock::FakeClock;
-use crate::domain::model::{Author, MyPr, ReviewState};
+use crate::domain::model::{Author, MyPr, RequestEvent, ReviewState};
 use crate::domain::testkit::*;
 use crate::github::FetchError;
 
@@ -121,6 +121,52 @@ fn snapshot(mine: Vec<MyPr>) -> AccountSnapshot {
     }
 }
 
+fn request(repo: &str, number: u64) -> ReviewRequest {
+    let mut base = base(repo, number);
+    base.author = "dave".into();
+    ReviewRequest {
+        base,
+        direct: true,
+        team: None,
+        event: Some(RequestEvent {
+            id: format!("RRE_{number}"),
+            actor: "dave".into(),
+        }),
+    }
+}
+
+fn re_requested(repo: &str, number: u64, by: &str) -> ReviewRequest {
+    ReviewRequest {
+        event: Some(RequestEvent {
+            id: format!("RRE_{number}_{by}"),
+            actor: by.into(),
+        }),
+        ..request(repo, number)
+    }
+}
+
+fn team_request(repo: &str, number: u64) -> ReviewRequest {
+    ReviewRequest {
+        direct: false,
+        team: Some("platform".into()),
+        event: Some(RequestEvent {
+            id: format!("RRE_{number}_team"),
+            actor: "dave".into(),
+        }),
+        ..request(repo, number)
+    }
+}
+
+fn shown_keys(calls: Vec<Call>) -> Vec<(String, u64, String)> {
+    calls
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Show(key, generation, message, _) => Some((key, generation, message)),
+            Call::Remove(_) => None,
+        })
+        .collect()
+}
+
 fn pr_with_changes_on(repo: &str, number: u64, id: &str) -> MyPr {
     let mut pr = my_pr(repo, number);
     pr.reviews = vec![review(
@@ -145,6 +191,14 @@ fn pr_with_changes(ids: &[&str]) -> MyPr {
 impl Harness {
     fn poll(&mut self, mine: Vec<MyPr>) {
         self.github.push(Ok(snapshot(mine)));
+        self.daemon.poll_account("me-work").unwrap();
+    }
+
+    fn poll_requests(&mut self, to_review: Vec<ReviewRequest>) {
+        self.github.push(Ok(AccountSnapshot {
+            to_review,
+            ..snapshot(vec![])
+        }));
         self.daemon.poll_account("me-work").unwrap();
     }
 
@@ -377,6 +431,7 @@ fn withheld_results_keep_missing_prs_for_a_grace_period() {
         base: base("acme/web", 5),
         direct: true,
         team: None,
+        event: None,
     };
     h.github.push(Ok(AccountSnapshot {
         login: "me-work".into(),
@@ -427,6 +482,7 @@ fn withheld_rows_are_kept_per_tab_and_until_exactly_the_grace_period() {
         base: base("acme/web", 5),
         direct: true,
         team: None,
+        event: None,
     };
     h.github.push(Ok(AccountSnapshot {
         login: "me-work".into(),
@@ -751,6 +807,7 @@ fn rows_of_accounts_removed_from_the_config_are_pruned() {
             base: base("oss/lib", 9),
             direct: true,
             team: None,
+            event: None,
         },
     );
     h.daemon
@@ -799,4 +856,238 @@ fn backoff_doubles_up_to_five_minutes() {
     assert_eq!(backoff(base, 3), Duration::seconds(240));
     assert_eq!(backoff(base, 4), Duration::seconds(300));
     assert_eq!(backoff(base, 20), Duration::seconds(300));
+}
+
+#[test]
+fn review_requests_waiting_at_the_first_poll_stay_silent() {
+    let mut h = harness();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.daemon.tick().unwrap();
+    h.clock.advance(Duration::minutes(10));
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+    h.poll_requests(vec![request("acme/web", 7), request("acme/web", 8)]);
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#8".into(), 1, "dave requested your review".into())]
+    );
+}
+
+#[test]
+fn a_review_request_pings_until_it_leaves_the_list() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    assert_eq!(
+        h.notifier.take(),
+        vec![Call::Show(
+            "acme/web#7".into(),
+            1,
+            "dave requested your review".into(),
+            true
+        )]
+    );
+    h.clock.advance(Duration::minutes(5));
+    h.daemon.tick().unwrap();
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#7".into(), 2, "dave requested your review".into())]
+    );
+    h.poll_requests(vec![]);
+    h.daemon.tick().unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/web#7".into())]);
+    h.clock.advance(Duration::minutes(30));
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+}
+
+#[test]
+fn a_re_requested_review_notifies_again_but_a_search_flap_does_not() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.poll_requests(vec![]);
+    h.daemon.tick().unwrap();
+    h.notifier.take();
+    h.clock.advance(Duration::minutes(1));
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+    h.poll_requests(vec![re_requested("acme/web", 7, "erin")]);
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#7".into(), 2, "erin requested your review".into())]
+    );
+}
+
+#[test]
+fn opening_a_requested_review_pauses_it_until_the_reminder() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.notifier.take();
+    h.daemon
+        .handle(Delivered {
+            pr_key: "acme/web#7".into(),
+            generation: 1,
+            response: Response::Opened,
+        })
+        .unwrap();
+    assert_eq!(
+        *h.opened.borrow(),
+        vec!["me-work https://github.com/acme/web/pull/7".to_string()]
+    );
+    h.clock.advance(Duration::minutes(29));
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+    h.clock.advance(Duration::minutes(1));
+    h.daemon.tick().unwrap();
+    assert_eq!(shown_keys(h.notifier.take()).len(), 1);
+}
+
+#[test]
+fn team_requests_ping_only_when_enabled_and_enabling_does_not_flood() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![team_request("acme/web", 7)]);
+    assert!(h.notifier.take().is_empty());
+    h.daemon.config.notify_team_requests = true;
+    h.poll_requests(vec![team_request("acme/web", 7)]);
+    assert!(h.notifier.take().is_empty());
+    h.poll_requests(vec![team_request("acme/web", 7), team_request("acme/web", 8)]);
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#8".into(), 1, "dave requested a review from your team".into())]
+    );
+}
+
+#[test]
+fn drafts_and_bot_pull_requests_never_ping() {
+    let mut h = harness().bootstrapped();
+    let mut draft = request("acme/web", 7);
+    draft.base.is_draft = true;
+    let mut bot = request("acme/web", 8);
+    bot.base.author = "dependabot".into();
+    bot.base.author_is_bot = true;
+    h.poll_requests(vec![draft, bot]);
+    assert!(h.notifier.take().is_empty());
+    let mut ready = request("acme/web", 7);
+    ready.base.is_draft = false;
+    h.poll_requests(vec![ready]);
+    assert_eq!(shown_keys(h.notifier.take()).len(), 1);
+}
+
+#[test]
+fn pings_stop_when_the_pr_goes_back_to_draft_or_only_a_team_request_remains() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7), request("acme/web", 8)]);
+    h.notifier.take();
+    let mut draft = request("acme/web", 7);
+    draft.base.is_draft = true;
+    let team_only = team_request("acme/web", 8);
+    h.clock.advance(Duration::minutes(5));
+    h.poll_requests(vec![draft, team_only]);
+    h.daemon.tick().unwrap();
+    let mut calls = h.notifier.take();
+    calls.sort_by_key(|c| format!("{c:?}"));
+    assert_eq!(
+        calls,
+        vec![Call::Remove("acme/web#7".into()), Call::Remove("acme/web#8".into())]
+    );
+}
+
+#[test]
+fn a_dismissed_review_request_stays_quiet_until_asked_again() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.notifier.take();
+    h.daemon
+        .store
+        .db()
+        .enqueue(
+            &Command::Done {
+                pr_key: "acme/web#7".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    h.daemon.consume_commands().unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/web#7".into())]);
+    h.clock.advance(Duration::minutes(10));
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+    assert!(h.daemon.store.db().alert("acme/web#7").unwrap().done_at.is_some());
+    h.poll_requests(vec![re_requested("acme/web", 7, "dave")]);
+    assert_eq!(shown_keys(h.notifier.take()).len(), 1);
+}
+
+#[test]
+fn a_request_that_goes_to_draft_and_back_pings_again_unless_dismissed() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7), request("acme/web", 8)]);
+    h.notifier.take();
+    h.daemon
+        .store
+        .db()
+        .enqueue(
+            &Command::Done {
+                pr_key: "acme/web#8".into(),
+            },
+            t(0),
+        )
+        .unwrap();
+    h.daemon.consume_commands().unwrap();
+    let as_draft = |number| {
+        let mut r = request("acme/web", number);
+        r.base.is_draft = true;
+        r
+    };
+    h.poll_requests(vec![as_draft(7), as_draft(8)]);
+    h.daemon.tick().unwrap();
+    h.notifier.take();
+    h.clock.advance(Duration::minutes(10));
+    h.poll_requests(vec![request("acme/web", 7), request("acme/web", 8)]);
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#7".into(), 2, "dave requested your review".into())]
+    );
+    h.poll_requests(vec![request("acme/web", 7), request("acme/web", 8)]);
+    assert!(h.notifier.take().is_empty());
+}
+
+#[test]
+fn a_team_request_on_another_account_does_not_end_a_direct_one() {
+    let mut h = harness_for(Store::open_in_memory().unwrap(), &["me-work", "me-home"]).bootstrapped();
+    h.github.push(Ok(AccountSnapshot {
+        login: "me-home".into(),
+        ..Default::default()
+    }));
+    h.daemon.poll_account("me-home").unwrap();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.github.push(Ok(AccountSnapshot {
+        login: "me-home".into(),
+        to_review: vec![team_request("acme/web", 7)],
+        ..Default::default()
+    }));
+    h.daemon.poll_account("me-home").unwrap();
+    h.notifier.take();
+    h.clock.advance(Duration::minutes(5));
+    h.daemon.tick().unwrap();
+    assert_eq!(shown_keys(h.notifier.take()).len(), 1);
+}
+
+#[test]
+fn a_request_whose_event_is_out_of_reach_does_not_ping_twice() {
+    let mut h = harness().bootstrapped();
+    h.poll_requests(vec![request("acme/web", 7)]);
+    h.notifier.take();
+    let mut no_event = request("acme/web", 7);
+    no_event.event = None;
+    h.poll_requests(vec![no_event.clone()]);
+    assert!(h.notifier.take().is_empty());
+    let mut fresh = request("acme/web", 9);
+    fresh.event = None;
+    h.poll_requests(vec![no_event, fresh]);
+    assert_eq!(
+        shown_keys(h.notifier.take()),
+        vec![("acme/web#9".into(), 1, "dave requested your review".into())]
+    );
 }

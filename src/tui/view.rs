@@ -11,6 +11,7 @@ use crate::store::Tab;
 
 const HIGHLIGHT: &str = "▶ ";
 const SPACING: u16 = 1;
+const FOOTER: &str = " enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit";
 
 pub fn render(frame: &mut Frame, app: &App) {
     let warnings: Vec<&String> = app.status.errors.iter().chain(app.status.degraded.iter()).collect();
@@ -38,10 +39,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         );
     }
     render_table(frame, body, app);
-    frame.render_widget(
-        Paragraph::new(footer_text(app)).style(Style::new().fg(Color::DarkGray)),
-        footer,
-    );
+    frame.render_widget(Paragraph::new(FOOTER).style(Style::new().fg(Color::DarkGray)), footer);
     if app.snoozing {
         render_snooze(frame, body, app);
     }
@@ -118,7 +116,7 @@ fn columns(tab: Tab, width: u16) -> Vec<Column> {
     };
     match tab {
         Tab::Review => {
-            let mut cols = vec![repo(28), number];
+            let mut cols = vec![repo(if width >= 100 { 28 } else { 20 }), number];
             if width >= 100 {
                 cols.push(Column {
                     title: "AUTHOR",
@@ -133,10 +131,11 @@ fn columns(tab: Tab, width: u16) -> Vec<Column> {
                     cell: |r| r.age.clone(),
                 });
             }
+            cols.push(alert);
             cols.push(account);
             cols.push(Column {
                 title: "VIA",
-                width: 16,
+                width: 14,
                 cell: |r| r.team.as_ref().map(|t| format!("team:{t}")).unwrap_or_default(),
             });
             cols
@@ -200,13 +199,6 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-fn footer_text(app: &App) -> String {
-    match app.tab {
-        Tab::Review => " enter open · r refresh · tab/1/2 switch · j/k move · q quit".into(),
-        Tab::Mine => " enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit".into(),
-    }
-}
-
 fn render_snooze(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = app
         .snooze_labels()
@@ -257,6 +249,7 @@ mod tests {
                 base: base("acme/gateway", 412),
                 direct: true,
                 team: None,
+                event: None,
             },
         );
         a.title = "[api] add rate limits to the public gateway endpoints".into();
@@ -267,10 +260,18 @@ mod tests {
                 base: base("acme/infrastructure", 77),
                 direct: false,
                 team: Some("platform".into()),
+                event: None,
             },
         );
         b.author = "bob".into();
-        app.review = review_rows(vec![a, b], &config, t(0));
+        let review_alerts = HashMap::from([(
+            "acme/gateway#412".to_string(),
+            AlertState {
+                cycle_started_at: Some(t(-5)),
+                ..Default::default()
+            },
+        )]);
+        app.review = review_rows(vec![a, b], &review_alerts, &HashSet::new(), &config, t(0));
         let mut m = PrRow::mine(
             "me-home",
             &my_pr("octocat/dotfiles", 310),
@@ -355,10 +356,15 @@ mod tests {
         let titles = |tab, width| columns(tab, width).iter().map(|c| c.title).collect::<Vec<_>>();
         assert_eq!(
             titles(Tab::Review, 120),
-            vec!["REPO", "#", "AUTHOR", "AGE", "ACCT", "VIA"]
+            vec!["REPO", "#", "AUTHOR", "AGE", "ALERT", "ACCT", "VIA"]
         );
-        assert_eq!(titles(Tab::Review, 99), vec!["REPO", "#", "AGE", "ACCT", "VIA"]);
-        assert_eq!(titles(Tab::Review, 84), vec!["REPO", "#", "ACCT", "VIA"]);
+        assert_eq!(
+            titles(Tab::Review, 99),
+            vec!["REPO", "#", "AGE", "ALERT", "ACCT", "VIA"]
+        );
+        assert_eq!(titles(Tab::Review, 84), vec!["REPO", "#", "ALERT", "ACCT", "VIA"]);
+        let fixed: u16 = columns(Tab::Review, 80).iter().map(|c| c.width).sum();
+        assert!(fixed + 5 * SPACING + 2 <= 70);
         assert_eq!(titles(Tab::Mine, 100), vec!["REPO", "#", "WHY", "ALERT", "ACCT"]);
         assert_eq!(titles(Tab::Mine, 99), vec!["REPO", "#", "WHY", "ALERT"]);
         let fixed: u16 = columns(Tab::Mine, 80).iter().map(|c| c.width).sum();

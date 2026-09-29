@@ -4,8 +4,8 @@ expression: "draw(&app(), 80, 7).backend()"
 ---
 " gh-overview   [1] To review (2)   [2] My PRs (1)              ● polled 12s ago "
 "────────────────────────────────────────────────────────────────────────────────"
-"  REPO                         #      TITLE          ACCT       VIA             "
-"▶ acme/gateway                 412    [api] add rat… work                       "
-"  acme/infrastructure          77     PR 77          work       team:platform   "
+"  REPO                 #      TITLE         ALERT      ACCT       VIA           "
+"▶ acme/gateway         412    [api] add ra… 🔔 pinging work                     " Hidden by multi-width symbols: [(45, " ")]
+"  acme/infrastructure  77     PR 77                    work       team:platform "
 "────────────────────────────────────────────────────────────────────────────────"
-" enter open · r refresh · tab/1/2 switch · j/k move · q quit                    "
+" enter open · s snooze · d done · r refresh · tab/1/2 switch · j/k move · q quit"

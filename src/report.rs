@@ -173,6 +173,7 @@ mod tests {
                 base: base("acme/web", 2),
                 direct: false,
                 team: Some("fe".into()),
+                event: None,
             }],
             truncated: vec!["acme/web#9: more than 50 reviews, older ones ignored".into()],
             ..Default::default()
@@ -229,6 +230,7 @@ mod tests {
                 base: base("acme/web", 2),
                 direct: true,
                 team: Some("fe".into()),
+                event: None,
             }],
             withheld_mine: true,
             ..Default::default()

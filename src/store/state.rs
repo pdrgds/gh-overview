@@ -19,8 +19,20 @@ impl Db<'_> {
         Ok(self
             .conn
             .query_row(
-                "SELECT 1 FROM activity WHERE pr_key = ?1 LIMIT 1",
+                "SELECT 1 FROM activity WHERE pr_key = ?1 AND substr(id, 1, 3) != 'rr:' LIMIT 1",
                 params![pr_key],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    pub fn has_marker(&self, pr_key: &str, prefix: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM activity WHERE pr_key = ?1 AND substr(id, 1, length(?2)) = ?2 LIMIT 1",
+                params![pr_key, prefix],
                 |_| Ok(()),
             )
             .optional()?
@@ -98,7 +110,7 @@ impl Db<'_> {
 
     pub fn retain_account_meta(&self, accounts: &[&str]) -> Result<usize> {
         let mut stmt = self.conn.prepare(
-            "SELECT key FROM meta WHERE key LIKE 'bootstrapped:%' OR key LIKE 'last_poll:%' OR key LIKE 'last_error:%'",
+            "SELECT key FROM meta WHERE key LIKE 'bootstrapped:%' OR key LIKE 'review_events_bootstrapped:%' OR key LIKE 'last_poll:%' OR key LIKE 'last_error:%'",
         )?;
         let keys: Vec<String> = stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         let mut removed = 0;
@@ -172,6 +184,26 @@ mod tests {
     }
 
     #[test]
+    fn markers_are_found_by_prefix_per_pr() {
+        let store = Store::open_in_memory().unwrap();
+        let db = store.db();
+        db.mark_seen("acme/a#1", "rr:work:RRE_1", t(0)).unwrap();
+        assert!(db.has_marker("acme/a#1", "rr:work:").unwrap());
+        assert!(!db.has_marker("acme/a#1", "rr:home:").unwrap());
+        assert!(!db.has_marker("acme/b#2", "rr:work:").unwrap());
+    }
+
+    #[test]
+    fn review_request_markers_do_not_make_a_pr_known() {
+        let store = Store::open_in_memory().unwrap();
+        let db = store.db();
+        db.mark_seen("acme/a#1", "rr:work:RRE_1", t(0)).unwrap();
+        assert!(!db.has_activity_for("acme/a#1").unwrap());
+        db.mark_seen("acme/a#1", "PRR_1", t(0)).unwrap();
+        assert!(db.has_activity_for("acme/a#1").unwrap());
+    }
+
+    #[test]
     fn account_meta_is_pruned_for_removed_accounts() {
         let store = Store::open_in_memory().unwrap();
         let db = store.db();
@@ -179,12 +211,13 @@ mod tests {
             "bootstrapped:work",
             "last_poll:work",
             "bootstrapped:gone",
+            "review_events_bootstrapped:gone",
             "last_error:gone",
             "heartbeat",
         ] {
             db.set_meta(key, "x").unwrap();
         }
-        assert_eq!(db.retain_account_meta(&["work"]).unwrap(), 2);
+        assert_eq!(db.retain_account_meta(&["work"]).unwrap(), 3);
         assert!(db.meta("bootstrapped:work").unwrap().is_some());
         assert!(db.meta("bootstrapped:gone").unwrap().is_none());
         assert!(db.meta("heartbeat").unwrap().is_some());

@@ -70,6 +70,7 @@ pub struct PrBase {
     pub title: String,
     pub url: String,
     pub author: String,
+    pub author_is_bot: bool,
     pub is_draft: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -94,6 +95,13 @@ pub struct ReviewRequest {
     pub base: PrBase,
     pub direct: bool,
     pub team: Option<String>,
+    pub event: Option<RequestEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestEvent {
+    pub id: String,
+    pub actor: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

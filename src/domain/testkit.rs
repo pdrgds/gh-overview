@@ -18,6 +18,7 @@ pub fn base(repo: &str, number: u64) -> PrBase {
         title: format!("PR {number}"),
         url: format!("https://github.com/{repo}/pull/{number}"),
         author: "me-work".to_string(),
+        author_is_bot: false,
         is_draft: false,
         created_at: t(-600),
     }

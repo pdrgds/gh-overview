@@ -54,6 +54,19 @@ query Overview($mine: String!, $review: String!) {
             }
           }
         }
+        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+          nodes {
+            ... on ReviewRequestedEvent {
+              id
+              actor { login }
+              requestedReviewer {
+                __typename
+                ... on User { login }
+                ... on Team { slug }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -66,5 +79,5 @@ fragment Base on PullRequest {
   isDraft
   createdAt
   repository { nameWithOwner }
-  author { login }
+  author { __typename login }
 }

@@ -82,10 +82,16 @@
           "isDraft": false,
           "createdAt": "2026-09-18T08:00:00Z",
           "repository": { "nameWithOwner": "acme/infra" },
-          "author": { "login": "carol" },
+          "author": { "__typename": "Bot", "login": "carol" },
           "reviewRequests": {
             "nodes": [
               { "requestedReviewer": { "__typename": "Team", "slug": "platform" } }
+            ]
+          },
+          "timelineItems": {
+            "nodes": [
+              { "id": "RRE_old", "actor": { "login": "carol" }, "requestedReviewer": { "__typename": "Team", "slug": "platform" } },
+              { "id": "RRE_other", "actor": { "login": "carol" }, "requestedReviewer": { "__typename": "Team", "slug": "security" } }
             ]
           }
         },
@@ -102,6 +108,14 @@
               { "requestedReviewer": { "__typename": "User", "login": "someone-else" } },
               { "requestedReviewer": { "__typename": "User", "login": "Me-Work" } },
               { "requestedReviewer": { "__typename": "Mannequin" } }
+            ]
+          },
+          "timelineItems": {
+            "nodes": [
+              { "id": "RRE_first", "actor": { "login": "dave" }, "requestedReviewer": { "__typename": "User", "login": "me-work" } },
+              { "id": "RRE_someone", "actor": { "login": "dave" }, "requestedReviewer": { "__typename": "User", "login": "someone-else" } },
+              { "id": "RRE_again", "actor": { "login": "erin" }, "requestedReviewer": { "__typename": "User", "login": "ME-WORK" } },
+              {}
             ]
           }
         }
