@@ -38,6 +38,13 @@ pub fn status_report(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result
     if let Some(degraded) = status.degraded {
         writeln!(out, "notifier: {degraded}")?;
     }
+    if let Some(until) = status.muted_until {
+        writeln!(
+            out,
+            "notifications: muted until {}",
+            until.with_timezone(&Local).format("%a %H:%M")
+        )?;
+    }
     for (key, state) in db.alerts()? {
         let phase = match state.phase(now) {
             Phase::Idle => continue,
@@ -186,6 +193,21 @@ mod tests {
              review acme/web#2 \"PR 2\" by me-work (team:fe)\n\
              warning: acme/web#9: more than 50 reviews, older ones ignored\n"
         );
+    }
+
+    #[test]
+    fn status_shows_an_active_mute() {
+        let store = Store::open_in_memory().unwrap();
+        let db = store.db();
+        let config = Config::with_accounts(vec!["me-work".into()]);
+        db.set_meta("muted_until", &t(60).to_rfc3339()).unwrap();
+        let until = t(60).with_timezone(&Local).format("%a %H:%M").to_string();
+        let text = status_report(&db, &config, t(0)).unwrap();
+        assert!(
+            text.contains(&format!("notifications: muted until {until}\n")),
+            "{text}"
+        );
+        assert!(!status_report(&db, &config, t(61)).unwrap().contains("muted"));
     }
 
     #[test]

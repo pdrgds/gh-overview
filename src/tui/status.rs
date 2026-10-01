@@ -15,6 +15,7 @@ pub struct HeaderStatus {
     pub health: Health,
     pub errors: Vec<String>,
     pub degraded: Option<String>,
+    pub muted_until: Option<DateTime<Utc>>,
 }
 
 impl Default for HeaderStatus {
@@ -23,6 +24,7 @@ impl Default for HeaderStatus {
             health: Health::DaemonDown,
             errors: vec![],
             degraded: None,
+            muted_until: None,
         }
     }
 }
@@ -69,6 +71,7 @@ pub fn header_status(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result
         health,
         errors,
         degraded: db.meta("notifier_degraded")?,
+        muted_until: parse_time(db.meta("muted_until")?).filter(|until| *until > now),
     })
 }
 
@@ -139,5 +142,15 @@ mod tests {
             status.degraded.as_deref(),
             Some("notifications are off for gh-overview")
         );
+    }
+
+    #[test]
+    fn only_a_future_mute_shows() {
+        let store = Store::open_in_memory().unwrap();
+        let db = store.db();
+        assert_eq!(header_status(&db, &config(), t(0)).unwrap().muted_until, None);
+        db.set_meta("muted_until", &t(60).to_rfc3339()).unwrap();
+        assert_eq!(header_status(&db, &config(), t(0)).unwrap().muted_until, Some(t(60)));
+        assert_eq!(header_status(&db, &config(), t(60)).unwrap().muted_until, None);
     }
 }

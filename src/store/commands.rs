@@ -11,6 +11,7 @@ pub enum Command {
     Snooze { pr_key: String, until: DateTime<Utc> },
     Done { pr_key: String },
     Refresh,
+    Mute { until: Option<DateTime<Utc>> },
 }
 
 impl Db<'_> {
@@ -20,6 +21,7 @@ impl Db<'_> {
             Command::Snooze { pr_key, until } => ("snooze", Some(pr_key.as_str()), Some(*until)),
             Command::Done { pr_key } => ("done", Some(pr_key.as_str()), None),
             Command::Refresh => ("refresh", None, None),
+            Command::Mute { until } => ("mute", None, *until),
         };
         self.conn.execute(
             "INSERT INTO commands (kind, pr_key, until, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -59,6 +61,7 @@ impl Db<'_> {
                 ("snooze", Some(pr_key), Some(until)) => Command::Snooze { pr_key, until },
                 ("done", Some(pr_key), _) => Command::Done { pr_key },
                 ("refresh", _, _) => Command::Refresh,
+                ("mute", _, until) => Command::Mute { until },
                 (other, _, _) => {
                     warn!("dropping malformed command {other:?} from the queue");
                     continue;
@@ -89,6 +92,8 @@ mod tests {
             },
             Command::Done { pr_key: "a#3".into() },
             Command::Refresh,
+            Command::Mute { until: Some(t(600)) },
+            Command::Mute { until: None },
         ];
         assert!(!store.db().has_commands().unwrap());
         for c in &sent {

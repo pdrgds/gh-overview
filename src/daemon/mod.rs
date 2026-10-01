@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, Utc};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::clock::Clock;
 use crate::config::Config;
@@ -18,7 +18,7 @@ use crate::domain::model::{AccountSnapshot, Author, PrBase, ReviewRequest};
 use crate::domain::reasons::{reasons, reviewed_by_others};
 use crate::domain::snooze::SnoozeChoice;
 use crate::github::client::GithubSource;
-use crate::notify::{Delivered, Notification, Notifier, Response};
+use crate::notify::{Delivered, MUTE_ACTION, Notification, Notifier, Response};
 use crate::store::{Command, PrRow, Store, Tab};
 
 pub use run::run;
@@ -77,7 +77,10 @@ pub struct Daemon {
     resync: bool,
     withheld_since: HashMap<String, DateTime<Utc>>,
     truncated: HashMap<String, Vec<String>>,
+    muted_until: Option<DateTime<Utc>>,
 }
+
+const MUTED_UNTIL: &str = "muted_until";
 
 fn pings_for(request: &ReviewRequest, identity: &Identity, notify_team: bool) -> bool {
     let author = Author {
@@ -107,7 +110,15 @@ impl Daemon {
         opener: Opener,
         config: Config,
     ) -> Self {
+        let muted_until = store
+            .db()
+            .meta(MUTED_UNTIL)
+            .ok()
+            .flatten()
+            .and_then(|v| DateTime::parse_from_rfc3339(&v).ok())
+            .map(|t| t.with_timezone(&Utc));
         Daemon {
+            muted_until,
             identity: config.identity(),
             snooze: config.snooze(),
             store,
@@ -379,6 +390,9 @@ impl Daemon {
 
     pub fn tick(&mut self) -> Result<()> {
         let now = self.clock.now();
+        if self.muted_until.is_some_and(|until| until <= now) {
+            self.set_mute(None)?;
+        }
         let renotify = self.config.renotify();
         self.absorb_notifier_reset();
         let alerts = self.store.db().alerts()?;
@@ -412,6 +426,10 @@ impl Daemon {
                 generation: delivered.generation,
                 remind_at: now + self.config.remind_after_open(),
             },
+            Response::Snoozed(label) if label == MUTE_ACTION => {
+                let until = SnoozeChoice::Tomorrow.until(now, &Local, self.config.tomorrow_hour);
+                return self.set_mute(Some(until));
+            }
             Response::Snoozed(label) => {
                 let hour = self.config.tomorrow_hour;
                 let Some(choice) = self.snooze.iter().find(|c| c.label(hour) == label) else {
@@ -439,6 +457,7 @@ impl Daemon {
                     self.next_poll.clear();
                     Ok(())
                 }
+                Command::Mute { until } => self.set_mute(until),
                 Command::Ack { pr_key } => {
                     let remind_at = self.clock.now() + self.config.remind_after_open();
                     self.apply_event(&pr_key, Event::Ack { remind_at })
@@ -461,6 +480,34 @@ impl Daemon {
             self.store.db().put_alert(key, &next)?;
         }
         self.apply_effects(key, None, effects);
+        Ok(())
+    }
+
+    fn muted(&self, now: DateTime<Utc>) -> bool {
+        self.muted_until.is_some_and(|until| until > now)
+    }
+
+    fn set_mute(&mut self, until: Option<DateTime<Utc>>) -> Result<()> {
+        let now = self.clock.now();
+        match until.filter(|t| *t > now) {
+            Some(until) => {
+                self.store.db().set_meta(MUTED_UNTIL, &until.to_rfc3339())?;
+                self.muted_until = Some(until);
+                for key in std::mem::take(&mut self.live).into_keys() {
+                    if let Err(err) = self.notifier.remove(&key) {
+                        warn!("remove {key} failed: {err:#}");
+                    }
+                }
+                info!("notifications muted until {until}");
+            }
+            None => {
+                self.store.db().delete_meta(MUTED_UNTIL)?;
+                if self.muted_until.take().is_some() {
+                    self.resync = true;
+                    info!("notifications unmuted");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -503,6 +550,9 @@ impl Daemon {
                     summary,
                     snoozable,
                 } => {
+                    if self.muted(self.clock.now()) {
+                        continue;
+                    }
                     let Some(info) = self.info_for(key, info.clone()) else {
                         warn!("no PR details for {key}; notification skipped");
                         continue;

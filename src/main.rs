@@ -1,14 +1,15 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use clap::{Parser, Subcommand};
 use gh_overview::config::{self, Config};
+use gh_overview::domain::snooze::SnoozeChoice;
 use gh_overview::github::client::{GithubClient, GithubSource};
 use gh_overview::github::token::GhCli;
 use gh_overview::notify::bundle;
 use gh_overview::paths::Paths;
 use gh_overview::service::ServiceInstaller;
 use gh_overview::service::launchd::Launchd;
-use gh_overview::store::Store;
+use gh_overview::store::{Command, Store};
 use gh_overview::{daemon, report, tui};
 use tracing_subscriber::EnvFilter;
 
@@ -25,6 +26,10 @@ enum Cmd {
     Install,
     Uninstall,
     Status,
+    Mute {
+        duration: Option<String>,
+    },
+    Unmute,
     Debug {
         #[command(subcommand)]
         command: DebugCmd,
@@ -90,6 +95,28 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Uninstall) => Ok(()),
+        Some(Cmd::Mute { duration }) => {
+            let now = Utc::now();
+            let until = match duration {
+                Some(raw) => now + chrono::Duration::from_std(humantime::parse_duration(&raw)?)?,
+                None => SnoozeChoice::Tomorrow.until(now, &Local, config.tomorrow_hour),
+            };
+            Store::open(&paths.db_file)?
+                .db()
+                .enqueue(&Command::Mute { until: Some(until) }, now)?;
+            println!(
+                "notifications muted until {}",
+                until.with_timezone(&Local).format("%a %H:%M")
+            );
+            Ok(())
+        }
+        Some(Cmd::Unmute) => {
+            Store::open(&paths.db_file)?
+                .db()
+                .enqueue(&Command::Mute { until: None }, Utc::now())?;
+            println!("notifications unmuted");
+            Ok(())
+        }
         Some(Cmd::Status) => {
             let store = Store::open(&paths.db_file)?;
             print!("{}", report::status_report(&store.db(), &config, Utc::now())?);

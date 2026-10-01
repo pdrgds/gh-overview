@@ -1133,3 +1133,68 @@ fn pings_stop_once_someone_else_reviews() {
     h.daemon.tick().unwrap();
     assert!(h.notifier.take().is_empty());
 }
+
+fn mute(h: &mut Harness, until: Option<chrono::DateTime<chrono::Utc>>) {
+    h.daemon.store.db().enqueue(&Command::Mute { until }, t(0)).unwrap();
+    h.daemon.consume_commands().unwrap();
+}
+
+#[test]
+fn muting_clears_the_screen_and_holds_notifications_until_unmuted() {
+    let mut h = harness().bootstrapped();
+    h.poll(vec![pr_with_changes(&["r1"])]);
+    h.notifier.take();
+    mute(&mut h, Some(t(600)));
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
+    h.github.push(Ok(AccountSnapshot {
+        mine: vec![pr_with_changes(&["r1", "r2"])],
+        to_review: vec![request("acme/web", 7)],
+        ..snapshot(vec![])
+    }));
+    h.daemon.poll_account("me-work").unwrap();
+    h.clock.advance(Duration::minutes(20));
+    h.daemon.tick().unwrap();
+    assert!(h.notifier.take().is_empty());
+    mute(&mut h, None);
+    h.daemon.tick().unwrap();
+    let mut shown: Vec<String> = shown_keys(h.notifier.take()).into_iter().map(|(k, ..)| k).collect();
+    shown.sort();
+    assert_eq!(shown, vec!["acme/api#1".to_string(), "acme/web#7".to_string()]);
+}
+
+#[test]
+fn a_mute_ends_on_its_own_and_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut h = harness_with(Store::open(&path).unwrap()).bootstrapped();
+    h.poll(vec![pr_with_changes(&["r1"])]);
+    mute(&mut h, Some(t(60)));
+    h.notifier.take();
+    let mut restarted = harness_with(Store::open(&path).unwrap());
+    restarted.clock.advance(Duration::minutes(30));
+    restarted.daemon.tick().unwrap();
+    assert!(restarted.notifier.take().is_empty());
+    restarted.clock.advance(Duration::minutes(30));
+    restarted.daemon.tick().unwrap();
+    assert_eq!(shown_keys(restarted.notifier.take()).len(), 1);
+    assert!(restarted.daemon.store.db().meta("muted_until").unwrap().is_none());
+}
+
+#[test]
+fn the_mute_action_on_a_notification_mutes_until_tomorrow() {
+    let mut h = harness().bootstrapped();
+    h.poll(vec![pr_with_changes(&["r1"])]);
+    h.notifier.take();
+    h.daemon
+        .handle(Delivered {
+            pr_key: "acme/api#1".into(),
+            generation: 1,
+            response: Response::Snoozed(crate::notify::MUTE_ACTION.into()),
+        })
+        .unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
+    let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, h.daemon.config.tomorrow_hour);
+    assert_eq!(h.daemon.muted_until, Some(tomorrow));
+    let alert = h.daemon.store.db().alert("acme/api#1").unwrap();
+    assert_eq!(alert.phase(t(0)), Phase::Pinging);
+}

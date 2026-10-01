@@ -68,6 +68,7 @@ pub struct App {
     remind_after_open: Duration,
     alerts: HashMap<String, AlertState>,
     predictions: HashMap<String, Prediction>,
+    mute_prediction: Option<(Option<DateTime<Utc>>, DateTime<Utc>)>,
 }
 
 fn view_row(row: PrRow, config: &Config, now: DateTime<Utc>, badge: Badge) -> ViewRow {
@@ -191,6 +192,7 @@ impl App {
             remind_after_open: config.remind_after_open(),
             alerts: HashMap::new(),
             predictions: HashMap::new(),
+            mute_prediction: None,
         }
     }
 
@@ -216,6 +218,13 @@ impl App {
         self.review = review;
         self.mine = mine_rows(db.prs(Tab::Mine)?, &alerts, &self.hidden, config, now);
         self.status = header_status(db, config, now)?;
+        if let Some((until, at)) = self.mute_prediction {
+            if self.status.muted_until == until || now - at >= PREDICTION_TTL {
+                self.mute_prediction = None;
+            } else {
+                self.status.muted_until = until;
+            }
+        }
         Ok(())
     }
 
@@ -324,6 +333,16 @@ impl App {
             }
             KeyCode::Char('r') => actions.push(Action::Enqueue(Command::Refresh)),
             KeyCode::Char('a') => self.show_reviewed = !self.show_reviewed,
+            KeyCode::Char('m') => {
+                let until = if self.status.muted_until.is_some_and(|t| t > now) {
+                    None
+                } else {
+                    Some(SnoozeChoice::Tomorrow.until(now, &Local, self.tomorrow_hour))
+                };
+                self.mute_prediction = Some((until, now));
+                self.status.muted_until = until;
+                actions.push(Action::Enqueue(Command::Mute { until }));
+            }
             _ => {}
         }
         actions
@@ -751,6 +770,29 @@ mod tests {
         app.on_key(key(KeyCode::Char('a')), t(0));
         app.load(&db, &config(), t(0)).unwrap();
         assert_eq!(keys(&app), vec!["acme/b#2"]);
+    }
+
+    #[test]
+    fn m_mutes_until_tomorrow_at_once_and_again_unmutes() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let db = store.db();
+        let mut app = App::new(&config());
+        app.load(&db, &config(), t(0)).unwrap();
+        let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, config().tomorrow_hour);
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('m')), t(0)),
+            vec![Action::Enqueue(Command::Mute { until: Some(tomorrow) })]
+        );
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.status.muted_until, Some(tomorrow));
+        db.set_meta("muted_until", &tomorrow.to_rfc3339()).unwrap();
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('m')), t(0)),
+            vec![Action::Enqueue(Command::Mute { until: None })]
+        );
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(app.status.muted_until, None);
     }
 
     #[test]

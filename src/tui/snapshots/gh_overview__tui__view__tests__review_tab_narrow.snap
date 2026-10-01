@@ -8,4 +8,4 @@ expression: "draw(&needing_review_only(app()), 80, 7).backend()"
 "▶ acme/gateway         412    [api] add ra… 🔔 pinging work                     " Hidden by multi-width symbols: [(45, " ")]
 "  acme/infrastructure  77     PR 77                    work       team:platform "
 "────────────────────────────────────────────────────────────────────────────────"
-" enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit  "
+" enter open · s snooze · d done · a reviewed · m mute today · r refresh · q quit"

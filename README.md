@@ -36,6 +36,8 @@ After `brew upgrade gh-overview`, run `ghov install` again to restart the daemon
 ```bash
 ghov            # open the TUI
 ghov status     # daemon health, last poll per account, active alerts
+ghov mute [2h]  # mute every notification until tomorrow morning (or for a duration)
+ghov unmute
 ghov debug fetch --account <login>   # what the daemon sees for one account
 ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAgent and notifier app
 ```
@@ -48,10 +50,11 @@ ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAge
 | `s` | snooze the selected PR's alert |
 | `d` | done: hide the PR until new activity arrives (for a review request, until you're asked again) |
 | `a` | show or hide review requests someone else already reviewed |
+| `m` | mute every notification until tomorrow at `tomorrow_hour`, or unmute |
 | `r` | ask the daemon to poll now |
 | `q` | quit |
 
-Clicking a notification opens the PR and pauses its pings for 30 minutes; its Options menu has Snooze.
+Clicking a notification opens the PR and pauses its pings for 30 minutes; its Options menu has Snooze and **Mute everything today**.
 
 ## Configuration
 
@@ -103,6 +106,8 @@ The daemon reads the config once at startup: after editing it, run `ghov install
 - Closing the notification does not count as acting, so it pings again after 5 minutes.
 - Pings stop on their own once the PR no longer needs you: threads resolved, you pushed after a changes request, or you replied.
 - New activity that needs you cancels a snooze, a pause or done, and pings at once.
+
+**Quiet time.** `m` in the TUI, `ghov mute`, or **Mute everything today** from a notification's Options menu clears the notifications on screen and shows nothing new until tomorrow at `tomorrow_hour` (`ghov mute 2h` for a set time; the header shows `🔕 muted until 09:00`). The daemon keeps tracking everything, so when the mute ends every PR that still needs you pings again at once; one-time notices from the muted period are not replayed.
 
 **Quiet start.** Nothing already there when the daemon first sees an account notifies: neither activity on your PRs nor review requests that were already waiting. A PR that shows up later notifies only for activity since about the previous poll, not for its history.
 

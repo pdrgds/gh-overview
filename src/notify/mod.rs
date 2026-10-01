@@ -2,6 +2,9 @@ pub mod bundle;
 pub mod native;
 pub mod osascript;
 
+pub const MUTE_ACTION: &str = "mute-today";
+pub const MUTE_TITLE: &str = "Mute everything today";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub pr_key: String,

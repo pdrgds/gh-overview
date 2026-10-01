@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use super::{Delivered, Notification, Notifier, Response};
+use super::{Delivered, MUTE_TITLE, Notification, Notifier, Response};
 
 const DENIED: &str =
     "notifications are off for gh-overview; allow them in System Settings → Notifications (snooze only via TUI)";
@@ -183,6 +183,7 @@ impl NativeNotifier {
         let mut command = Command::new(&self.program);
         command
             .arg(format!("--actions={}", self.actions.join(",")))
+            .arg(format!("--mute-action={MUTE_TITLE}"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -445,6 +446,8 @@ while IFS= read -r line; do echo "$line" >> "{log}"; done"#,
             let op = request["op"].as_str().unwrap();
             assert!(swift.contains(&format!("case \"{op}\":")), "main.swift ignores op {op}");
         }
+        assert!(swift.contains(&format!("identifier: \"{}\"", super::super::MUTE_ACTION)));
+        assert!(swift.contains("option(\"mute-action\")"));
         for needle in [
             r#""event": "ready", "state": state"#,
             r#"state = "authorized""#,
@@ -499,7 +502,7 @@ done"#,
             .lines()
             .map(String::from)
             .collect();
-        assert_eq!(lines[0], "args:--actions=15m,1h");
+        assert_eq!(lines[0], "args:--actions=15m,1h --mute-action=Mute everything today");
         assert_eq!(lines[1], r#"{"op":"clear"}"#);
         assert!(lines[2].starts_with(r#"{"op":"show","key":"acme/api#1","generation":2,"#));
         assert_eq!(lines[3], r#"{"op":"remove","key":"acme/api#1"}"#);

@@ -178,14 +178,15 @@ if flag("clear") {
     DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(0) }
 } else {
     let actions = (option("actions") ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
+    let mute = option("mute-action").map { [UNNotificationAction(identifier: "mute-today", title: $0, options: [])] } ?? []
     center.setNotificationCategories([
         UNNotificationCategory(
             identifier: "snoozable",
-            actions: actions.map { UNNotificationAction(identifier: $0, title: "Snooze \($0)", options: []) },
+            actions: actions.map { UNNotificationAction(identifier: $0, title: "Snooze \($0)", options: []) } + mute,
             intentIdentifiers: [],
             options: [.customDismissAction]
         ),
-        UNNotificationCategory(identifier: "oneshot", actions: [], intentIdentifiers: [], options: [.customDismissAction]),
+        UNNotificationCategory(identifier: "oneshot", actions: mute, intentIdentifiers: [], options: [.customDismissAction]),
     ])
     for sig in [SIGTERM, SIGINT, SIGHUP] {
         signal(sig, SIG_IGN)

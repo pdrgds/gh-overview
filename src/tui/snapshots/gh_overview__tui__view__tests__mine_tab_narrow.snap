@@ -7,4 +7,4 @@ expression: "draw(&app, 80, 6).backend()"
 "  REPO                 #      TITLE            WHY                    ALERT     "
 "▶ octocat/dotfiles     310    [draft] PR 310   3 threads · changes: a 🔔 pinging" Hidden by multi-width symbols: [(71, " ")]
 "────────────────────────────────────────────────────────────────────────────────"
-" enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit  "
+" enter open · s snooze · d done · a reviewed · m mute today · r refresh · q quit"

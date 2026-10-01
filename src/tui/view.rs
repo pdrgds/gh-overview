@@ -11,7 +11,7 @@ use crate::store::Tab;
 
 const HIGHLIGHT: &str = "▶ ";
 const SPACING: u16 = 1;
-const FOOTER: &str = " enter open · s snooze · d done · a reviewed · r refresh · tab switch · q quit";
+const FOOTER: &str = " enter open · s snooze · d done · a reviewed · m mute today · r refresh · q quit";
 
 pub fn render(frame: &mut Frame, app: &App) {
     let warnings: Vec<&String> = app.status.errors.iter().chain(app.status.degraded.iter()).collect();
@@ -69,7 +69,14 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw("   "),
         tab(format!("[2] My PRs ({})", app.mine.len()), app.tab == Tab::Mine),
     ]);
-    let right = Line::from(match &app.status.health {
+    let mut right = Line::default();
+    if let Some(until) = app.status.muted_until {
+        right.push_span(Span::styled(
+            format!("🔕 muted until {}  ", until.with_timezone(&Local).format("%H:%M")),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    right.push_span(match &app.status.health {
         Health::Ok { polled_ago: Some(ago) } => {
             Span::styled(format!("● polled {ago} ago "), Style::new().fg(Color::Green))
         }
@@ -333,6 +340,7 @@ mod tests {
             },
             errors: vec![],
             degraded: None,
+            muted_until: None,
         };
         app
     }
@@ -386,8 +394,32 @@ mod tests {
             health: Health::DaemonDown,
             errors: vec!["personal: gh auth token failed (last ok 10m ago)".into()],
             degraded: Some("notifications are off for gh-overview".into()),
+            muted_until: None,
         };
         insta::assert_snapshot!(draw(&app, 100, 4).backend());
+    }
+
+    #[test]
+    fn header_shows_a_mute() {
+        let mut app = needing_review_only(app());
+        app.status.muted_until = Some(
+            t(0).with_timezone(&Local)
+                .date_naive()
+                .and_hms_opt(23, 30, 0)
+                .unwrap()
+                .and_local_timezone(Local)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        let backend = draw(&app, 120, 4);
+        let header: String = (0..120)
+            .map(|x| backend.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            header.contains("🔕") && header.contains("muted until 23:30"),
+            "{header}"
+        );
+        assert!(header.contains("● polled 12s ago"), "{header}");
     }
 
     #[test]
