@@ -29,6 +29,8 @@ ghov install
 
 `ghov install` starts the daemon and asks macOS for notification permission: choose **Options → Allow** (clicking the banner itself counts as Don't Allow). Then, in **System Settings → Notifications → gh-overview**, set the style to **Alerts** so notifications stay on screen until you act.
 
+Then run `ghov`: the lists fill within a minute. PRs already waiting stay quiet; you're notified about what happens from now on.
+
 After `brew upgrade gh-overview`, run `ghov install` again to restart the daemon on the new version.
 
 ## Use
