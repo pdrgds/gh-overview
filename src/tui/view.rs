@@ -11,7 +11,6 @@ use crate::store::Tab;
 
 const HIGHLIGHT: &str = "▶ ";
 const SPACING: u16 = 1;
-const FOOTER: &str = " enter open · s snooze · d done · a reviewed · m mute today · r refresh · q quit";
 
 pub fn render(frame: &mut Frame, app: &App) {
     let warnings: Vec<&String> = app.status.errors.iter().chain(app.status.degraded.iter()).collect();
@@ -39,10 +38,24 @@ pub fn render(frame: &mut Frame, app: &App) {
         );
     }
     render_table(frame, body, app);
-    frame.render_widget(Paragraph::new(FOOTER).style(Style::new().fg(Color::DarkGray)), footer);
+    render_footer(frame, footer, app);
     if app.snoozing {
         render_snooze(frame, body, app);
     }
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let footer = match &app.notice {
+        Some(notice) => Paragraph::new(format!(" {notice}")).style(Style::new().fg(Color::Yellow)),
+        None => {
+            let snooze = if app.can_snooze() { " s snooze ·" } else { "" };
+            Paragraph::new(format!(
+                " enter open ·{snooze} d done · a reviewed · m mute today · r refresh · q quit"
+            ))
+            .style(Style::new().fg(Color::DarkGray))
+        }
+    };
+    frame.render_widget(footer, area);
 }
 
 fn review_label(app: &App) -> String {
@@ -245,6 +258,7 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::config::Config;
@@ -420,6 +434,38 @@ mod tests {
             "{header}"
         );
         assert!(header.contains("● polled 12s ago"), "{header}");
+    }
+
+    fn footer(app: &App) -> String {
+        let backend = draw(app, 120, 7);
+        (0..120)
+            .map(|x| backend.backend().buffer()[(x, 6)].symbol().to_string())
+            .collect()
+    }
+
+    fn press(app: &mut App, c: char) {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), t(0));
+    }
+
+    #[test]
+    fn footer_offers_snooze_only_on_a_row_with_an_alert() {
+        let mut app = needing_review_only(app());
+        assert!(footer(&app).contains("s snooze"), "{}", footer(&app));
+        press(&mut app, 'j');
+        assert!(!footer(&app).contains("s snooze"), "{}", footer(&app));
+        assert!(footer(&app).contains("d done"), "{}", footer(&app));
+    }
+
+    #[test]
+    fn footer_says_why_s_did_nothing() {
+        let mut app = needing_review_only(app());
+        press(&mut app, 'j');
+        press(&mut app, 's');
+        assert!(
+            footer(&app).contains("#77 isn't pinging, nothing to snooze"),
+            "{}",
+            footer(&app)
+        );
     }
 
     #[test]

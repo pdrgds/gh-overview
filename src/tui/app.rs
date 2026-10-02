@@ -57,6 +57,7 @@ pub struct App {
     pub mine: Vec<ViewRow>,
     pub status: HeaderStatus,
     pub snoozing: bool,
+    pub notice: Option<String>,
     pub quit: bool,
     pub show_reviewed: bool,
     pub reviewed_count: usize,
@@ -181,6 +182,7 @@ impl App {
             mine: vec![],
             status: HeaderStatus::default(),
             snoozing: false,
+            notice: None,
             quit: false,
             show_reviewed: false,
             reviewed_count: 0,
@@ -255,6 +257,10 @@ impl App {
         self.snooze.iter().map(|c| c.label(self.tomorrow_hour)).collect()
     }
 
+    pub fn can_snooze(&self) -> bool {
+        self.selected_row().is_some_and(|r| r.badge != Badge::None)
+    }
+
     fn predict(&mut self, key: &str, event: Event, now: DateTime<Utc>) {
         let base = self.alerts.get(key).cloned().unwrap_or_default();
         let (base, from) = match self.predictions.remove(key) {
@@ -284,6 +290,7 @@ impl App {
             self.quit = true;
             return Vec::new();
         }
+        self.notice = None;
         if self.snoozing {
             return self.on_snooze_key(key, now);
         }
@@ -318,8 +325,10 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                if selected.is_some_and(|r| r.badge != Badge::None) {
+                if self.can_snooze() {
                     self.snoozing = true;
+                } else if let Some(row) = selected {
+                    self.notice = Some(format!("#{} isn't pinging, nothing to snooze", row.number));
                 }
             }
             KeyCode::Char('d') => {
@@ -521,6 +530,17 @@ mod tests {
         app.on_key(key(KeyCode::Char('j')), t(0));
         app.on_key(key(KeyCode::Char('s')), t(0));
         assert!(!app.snoozing);
+    }
+
+    #[test]
+    fn s_on_a_row_without_an_alert_says_why_until_the_next_key() {
+        let mut app = app_with_mine();
+        app.on_key(key(KeyCode::Char('j')), t(0));
+        assert!(app.on_key(key(KeyCode::Char('s')), t(0)).is_empty());
+        assert!(!app.snoozing);
+        assert_eq!(app.notice.as_deref(), Some("#2 isn't pinging, nothing to snooze"));
+        app.on_key(key(KeyCode::Char('k')), t(0));
+        assert_eq!(app.notice, None);
     }
 
     #[test]
