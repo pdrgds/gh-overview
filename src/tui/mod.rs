@@ -2,6 +2,8 @@ pub mod app;
 pub mod status;
 pub mod view;
 
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -27,8 +29,13 @@ pub fn run(paths: &Paths, config: &Config) -> Result<()> {
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, store: &Store, app: &mut App, config: &Config) -> Result<()> {
+    let (opened_tx, opened_rx) = mpsc::channel::<Vec<Command>>();
     let mut last_load: Option<Instant> = None;
     loop {
+        for then in opened_rx.try_iter() {
+            enqueue_all(store, &then)?;
+            last_load = None;
+        }
         if last_load.is_none_or(|t| t.elapsed() >= RELOAD) {
             app.load(&store.db(), config, Utc::now())?;
             last_load = Some(Instant::now());
@@ -40,29 +47,52 @@ fn event_loop(terminal: &mut DefaultTerminal, store: &Store, app: &mut App, conf
         {
             dispatch(
                 app.on_key(key, Utc::now()),
-                |login, url| browser::open_url(config.browser_for(login), url).is_ok(),
+                |login, url, then| {
+                    let browser = config.browser_for(login).cloned();
+                    let url = url.to_owned();
+                    let opened = opened_tx.clone();
+                    thread::spawn(move || {
+                        if browser::open_url(browser.as_ref(), &url).is_ok() {
+                            let _ = opened.send(then);
+                        }
+                    });
+                },
                 |command| store.db().enqueue(command, Utc::now()),
             )?;
             last_load = None;
         }
         if app.quit {
+            drop(opened_tx);
+            for then in opened_rx {
+                enqueue_all(store, &then)?;
+            }
             return Ok(());
         }
     }
 }
 
+fn enqueue_all(store: &Store, commands: &[Command]) -> Result<()> {
+    commands
+        .iter()
+        .try_for_each(|command| store.db().enqueue(command, Utc::now()))
+}
+
 fn dispatch(
     actions: Vec<Action>,
-    mut open: impl FnMut(&str, &str) -> bool,
+    mut open: impl FnMut(&str, &str, Vec<Command>),
     mut enqueue: impl FnMut(&Command) -> Result<()>,
 ) -> Result<()> {
-    let mut opened = true;
+    let mut opening = None;
+    let mut then = Vec::new();
     for action in actions {
         match action {
-            Action::Open { login, url } => opened = open(&login, &url),
-            Action::Enqueue(Command::Ack { .. }) if !opened => {}
+            Action::Open { login, url } => opening = Some((login, url)),
+            Action::Enqueue(command @ Command::Ack { .. }) if opening.is_some() => then.push(command),
             Action::Enqueue(command) => enqueue(&command)?,
         }
+    }
+    if let Some((login, url)) = opening {
+        open(&login, &url, then);
     }
     Ok(())
 }
@@ -72,22 +102,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_failed_open_does_not_acknowledge() {
-        let actions = || {
+    fn an_open_defers_its_acknowledgement_until_the_browser_opened() {
+        let ack = Command::Ack {
+            pr_key: "acme/api#1".into(),
+        };
+        let mut opened = Vec::new();
+        let mut queued = Vec::new();
+        dispatch(
             vec![
                 Action::Open {
                     login: "me-work".into(),
                     url: "https://github.com/acme/api/pull/1".into(),
                 },
-                Action::Enqueue(Command::Ack {
-                    pr_key: "acme/api#1".into(),
-                }),
-            ]
-        };
-        let mut queued = Vec::new();
-        dispatch(
-            actions(),
-            |_, _| false,
+                Action::Enqueue(ack.clone()),
+            ],
+            |login, url, then| opened.push((login.to_owned(), url.to_owned(), then)),
             |c| {
                 queued.push(c.clone());
                 Ok(())
@@ -95,20 +124,13 @@ mod tests {
         )
         .unwrap();
         assert!(queued.is_empty());
-        dispatch(
-            actions(),
-            |_, _| true,
-            |c| {
-                queued.push(c.clone());
-                Ok(())
-            },
-        )
-        .unwrap();
         assert_eq!(
-            queued,
-            vec![Command::Ack {
-                pr_key: "acme/api#1".into()
-            }]
+            opened,
+            vec![(
+                "me-work".to_owned(),
+                "https://github.com/acme/api/pull/1".to_owned(),
+                vec![ack]
+            )]
         );
     }
 
@@ -117,7 +139,7 @@ mod tests {
         let mut queued = Vec::new();
         dispatch(
             vec![Action::Enqueue(Command::Refresh)],
-            |_, _| false,
+            |_, _, _| {},
             |c| {
                 queued.push(c.clone());
                 Ok(())
