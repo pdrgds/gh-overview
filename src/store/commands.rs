@@ -3,15 +3,54 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 use tracing::warn;
 
-use super::Db;
+use super::{Db, Tab};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MuteScope {
+    Everything,
+    Only(Tab),
+}
+
+impl MuteScope {
+    pub const ALL: [MuteScope; 3] = [
+        MuteScope::Everything,
+        MuteScope::Only(Tab::Review),
+        MuteScope::Only(Tab::Mine),
+    ];
+
+    pub fn tabs(self) -> Vec<Tab> {
+        match self {
+            MuteScope::Everything => Tab::ALL.to_vec(),
+            MuteScope::Only(tab) => vec![tab],
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            MuteScope::Everything => "mute",
+            MuteScope::Only(Tab::Review) => "mute:review",
+            MuteScope::Only(Tab::Mine) => "mute:mine",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Ack { pr_key: String },
-    Snooze { pr_key: String, until: DateTime<Utc> },
-    Done { pr_key: String },
+    Ack {
+        pr_key: String,
+    },
+    Snooze {
+        pr_key: String,
+        until: DateTime<Utc>,
+    },
+    Done {
+        pr_key: String,
+    },
     Refresh,
-    Mute { until: Option<DateTime<Utc>> },
+    Mute {
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+    },
 }
 
 impl Db<'_> {
@@ -21,7 +60,7 @@ impl Db<'_> {
             Command::Snooze { pr_key, until } => ("snooze", Some(pr_key.as_str()), Some(*until)),
             Command::Done { pr_key } => ("done", Some(pr_key.as_str()), None),
             Command::Refresh => ("refresh", None, None),
-            Command::Mute { until } => ("mute", None, *until),
+            Command::Mute { scope, until } => (scope.kind(), None, *until),
         };
         self.conn.execute(
             "INSERT INTO commands (kind, pr_key, until, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -61,11 +100,13 @@ impl Db<'_> {
                 ("snooze", Some(pr_key), Some(until)) => Command::Snooze { pr_key, until },
                 ("done", Some(pr_key), _) => Command::Done { pr_key },
                 ("refresh", _, _) => Command::Refresh,
-                ("mute", _, until) => Command::Mute { until },
-                (other, _, _) => {
-                    warn!("dropping malformed command {other:?} from the queue");
-                    continue;
-                }
+                (other, _, until) => match MuteScope::ALL.into_iter().find(|s| s.kind() == other) {
+                    Some(scope) => Command::Mute { scope, until },
+                    None => {
+                        warn!("dropping malformed command {other:?} from the queue");
+                        continue;
+                    }
+                },
             };
             commands.push(command);
         }
@@ -92,8 +133,22 @@ mod tests {
             },
             Command::Done { pr_key: "a#3".into() },
             Command::Refresh,
-            Command::Mute { until: Some(t(600)) },
-            Command::Mute { until: None },
+            Command::Mute {
+                scope: MuteScope::Everything,
+                until: Some(t(600)),
+            },
+            Command::Mute {
+                scope: MuteScope::Only(Tab::Review),
+                until: Some(t(60)),
+            },
+            Command::Mute {
+                scope: MuteScope::Only(Tab::Mine),
+                until: None,
+            },
+            Command::Mute {
+                scope: MuteScope::Everything,
+                until: None,
+            },
         ];
         assert!(!store.db().has_commands().unwrap());
         for c in &sent {

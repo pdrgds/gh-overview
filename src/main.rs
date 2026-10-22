@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{Local, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use gh_overview::config::{self, Config};
 use gh_overview::domain::snooze::SnoozeChoice;
 use gh_overview::github::client::{GithubClient, GithubSource};
@@ -9,7 +9,7 @@ use gh_overview::notify::bundle;
 use gh_overview::paths::Paths;
 use gh_overview::service::ServiceInstaller;
 use gh_overview::service::launchd::Launchd;
-use gh_overview::store::{Command, Store};
+use gh_overview::store::{Command, MuteScope, Store, Tab};
 use gh_overview::{daemon, report, tui};
 use tracing_subscriber::EnvFilter;
 
@@ -28,12 +28,31 @@ enum Cmd {
     Status,
     Mute {
         duration: Option<String>,
+        #[arg(long, value_enum)]
+        only: Option<Only>,
     },
-    Unmute,
+    Unmute {
+        #[arg(long, value_enum)]
+        only: Option<Only>,
+    },
     Debug {
         #[command(subcommand)]
         command: DebugCmd,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Only {
+    Review,
+    Mine,
+}
+
+fn mute_scope(only: Option<Only>) -> (MuteScope, &'static str) {
+    match only {
+        None => (MuteScope::Everything, "notifications"),
+        Some(Only::Review) => (MuteScope::Only(Tab::Review), "review notifications"),
+        Some(Only::Mine) => (MuteScope::Only(Tab::Mine), "my PR notifications"),
+    }
 }
 
 #[derive(Subcommand)]
@@ -95,26 +114,29 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Uninstall) => Ok(()),
-        Some(Cmd::Mute { duration }) => {
+        Some(Cmd::Mute { duration, only }) => {
             let now = Utc::now();
             let until = match duration {
                 Some(raw) => now + chrono::Duration::from_std(humantime::parse_duration(&raw)?)?,
                 None => SnoozeChoice::Tomorrow.until(now, &Local, config.tomorrow_hour),
             };
-            Store::open(&paths.db_file)?
-                .db()
-                .enqueue(&Command::Mute { until: Some(until) }, now)?;
-            println!(
-                "notifications muted until {}",
-                until.with_timezone(&Local).format("%a %H:%M")
-            );
+            let (scope, what) = mute_scope(only);
+            Store::open(&paths.db_file)?.db().enqueue(
+                &Command::Mute {
+                    scope,
+                    until: Some(until),
+                },
+                now,
+            )?;
+            println!("{what} muted until {}", until.with_timezone(&Local).format("%a %H:%M"));
             Ok(())
         }
-        Some(Cmd::Unmute) => {
+        Some(Cmd::Unmute { only }) => {
+            let (scope, what) = mute_scope(only);
             Store::open(&paths.db_file)?
                 .db()
-                .enqueue(&Command::Mute { until: None }, Utc::now())?;
-            println!("notifications unmuted");
+                .enqueue(&Command::Mute { scope, until: None }, Utc::now())?;
+            println!("{what} unmuted");
             Ok(())
         }
         Some(Cmd::Status) => {

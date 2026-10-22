@@ -66,7 +66,8 @@ func show(_ command: [String: Any], then done: @escaping () -> Void) {
     content.body = command["message"] as? String ?? ""
     content.sound = .default
     content.threadIdentifier = key
-    content.categoryIdentifier = (command["snoozable"] as? Bool ?? false) ? "snoozable" : "oneshot"
+    let kind = (command["snoozable"] as? Bool ?? false) ? "snoozable" : "oneshot"
+    content.categoryIdentifier = "\(kind)-\(command["tab"] as? String ?? "")"
     content.userInfo = ["key": key, "generation": generation]
     removeThread(key) {
         let request = UNNotificationRequest(identifier: "\(key)#\(generation)", content: content, trigger: nil)
@@ -178,16 +179,21 @@ if flag("clear") {
     DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(0) }
 } else {
     let actions = (option("actions") ?? "").split(separator: ",").map(String.init).filter { !$0.isEmpty }
-    let mute = option("mute-action").map { [UNNotificationAction(identifier: "mute-today", title: $0, options: [])] } ?? []
-    center.setNotificationCategories([
-        UNNotificationCategory(
-            identifier: "snoozable",
-            actions: actions.map { UNNotificationAction(identifier: $0, title: "Snooze \($0)", options: []) } + mute,
-            intentIdentifiers: [],
-            options: [.customDismissAction]
-        ),
-        UNNotificationCategory(identifier: "oneshot", actions: mute, intentIdentifiers: [], options: [.customDismissAction]),
-    ])
+    let snooze = actions.map { UNNotificationAction(identifier: $0, title: "Snooze \($0)", options: []) }
+    center.setNotificationCategories(Set(["review", "mine"].flatMap { tab in
+        let mute = ["mute-\(tab)-today", "mute-today"].compactMap { identifier in
+            option(identifier).map { UNNotificationAction(identifier: identifier, title: $0, options: []) }
+        }
+        return [
+            UNNotificationCategory(
+                identifier: "snoozable-\(tab)",
+                actions: snooze + mute,
+                intentIdentifiers: [],
+                options: [.customDismissAction]
+            ),
+            UNNotificationCategory(identifier: "oneshot-\(tab)", actions: mute, intentIdentifiers: [], options: [.customDismissAction]),
+        ]
+    }))
     for sig in [SIGTERM, SIGINT, SIGHUP] {
         signal(sig, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)

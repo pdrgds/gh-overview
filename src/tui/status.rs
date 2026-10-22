@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 
 use crate::config::Config;
-use crate::store::Db;
+use crate::store::{Db, Tab};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Health {
@@ -15,7 +17,7 @@ pub struct HeaderStatus {
     pub health: Health,
     pub errors: Vec<String>,
     pub degraded: Option<String>,
-    pub muted_until: Option<DateTime<Utc>>,
+    pub muted_until: HashMap<Tab, DateTime<Utc>>,
 }
 
 impl Default for HeaderStatus {
@@ -24,7 +26,7 @@ impl Default for HeaderStatus {
             health: Health::DaemonDown,
             errors: vec![],
             degraded: None,
-            muted_until: None,
+            muted_until: HashMap::new(),
         }
     }
 }
@@ -43,6 +45,21 @@ fn parse_time(value: Option<String>) -> Option<DateTime<Utc>> {
     value
         .and_then(|v| DateTime::parse_from_rfc3339(&v).ok())
         .map(|t| t.with_timezone(&Utc))
+}
+
+pub fn mute_text(muted_until: &HashMap<Tab, DateTime<Utc>>, format: &str) -> Option<String> {
+    let at = |until: &DateTime<Utc>| until.with_timezone(&Local).format(format).to_string();
+    match (muted_until.get(&Tab::Review), muted_until.get(&Tab::Mine)) {
+        (None, None) => None,
+        (Some(review), Some(mine)) if review == mine => Some(format!("muted until {}", at(review))),
+        (review, mine) => Some(
+            [("reviews", review), ("my PRs", mine)]
+                .into_iter()
+                .filter_map(|(what, until)| until.map(|until| format!("{what} muted until {}", at(until))))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
 }
 
 pub fn header_status(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result<HeaderStatus> {
@@ -71,7 +88,11 @@ pub fn header_status(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result
         health,
         errors,
         degraded: db.meta("notifier_degraded")?,
-        muted_until: parse_time(db.meta("muted_until")?).filter(|until| *until > now),
+        muted_until: db
+            .muted_until()?
+            .into_iter()
+            .filter(|(_, until)| *until > now)
+            .collect(),
     })
 }
 
@@ -145,12 +166,38 @@ mod tests {
     }
 
     #[test]
-    fn only_a_future_mute_shows() {
+    fn only_a_future_mute_shows_per_tab() {
         let store = Store::open_in_memory().unwrap();
         let db = store.db();
-        assert_eq!(header_status(&db, &config(), t(0)).unwrap().muted_until, None);
-        db.set_meta("muted_until", &t(60).to_rfc3339()).unwrap();
-        assert_eq!(header_status(&db, &config(), t(0)).unwrap().muted_until, Some(t(60)));
-        assert_eq!(header_status(&db, &config(), t(60)).unwrap().muted_until, None);
+        assert!(header_status(&db, &config(), t(0)).unwrap().muted_until.is_empty());
+        db.set_muted_until(Tab::Review, Some(t(60))).unwrap();
+        db.set_muted_until(Tab::Mine, Some(t(30))).unwrap();
+        assert_eq!(
+            header_status(&db, &config(), t(0)).unwrap().muted_until,
+            HashMap::from([(Tab::Review, t(60)), (Tab::Mine, t(30))])
+        );
+        assert_eq!(
+            header_status(&db, &config(), t(30)).unwrap().muted_until,
+            HashMap::from([(Tab::Review, t(60))])
+        );
+        assert!(header_status(&db, &config(), t(60)).unwrap().muted_until.is_empty());
+    }
+
+    #[test]
+    fn mute_text_names_the_muted_tabs_unless_both_end_together() {
+        let at = |m| t(m).with_timezone(&Local).format("%H:%M").to_string();
+        assert_eq!(mute_text(&HashMap::new(), "%H:%M"), None);
+        let both = HashMap::from([(Tab::Review, t(60)), (Tab::Mine, t(60))]);
+        assert_eq!(mute_text(&both, "%H:%M"), Some(format!("muted until {}", at(60))));
+        let review = HashMap::from([(Tab::Review, t(60))]);
+        assert_eq!(
+            mute_text(&review, "%H:%M"),
+            Some(format!("reviews muted until {}", at(60)))
+        );
+        let apart = HashMap::from([(Tab::Review, t(60)), (Tab::Mine, t(30))]);
+        assert_eq!(
+            mute_text(&apart, "%H:%M"),
+            Some(format!("reviews muted until {}, my PRs muted until {}", at(60), at(30)))
+        );
     }
 }

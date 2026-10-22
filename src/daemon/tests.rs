@@ -10,6 +10,7 @@ use crate::domain::model::{Author, MyPr, RequestEvent, ReviewMark, ReviewState};
 use crate::domain::reasons::Reason;
 use crate::domain::testkit::*;
 use crate::github::FetchError;
+use crate::notify::mute_action;
 
 #[derive(Clone, Default)]
 struct FakeGithub(Rc<RefCell<VecDeque<Result<AccountSnapshot, FetchError>>>>);
@@ -35,6 +36,7 @@ enum Call {
 #[derive(Clone, Default)]
 struct FakeNotifier {
     calls: Rc<RefCell<Vec<Call>>>,
+    tabs: Rc<RefCell<HashMap<String, Tab>>>,
     reset: Rc<Cell<bool>>,
     reset_on_show: Rc<Cell<bool>>,
 }
@@ -50,6 +52,7 @@ impl Notifier for FakeNotifier {
         if self.reset_on_show.replace(false) {
             self.reset.set(true);
         }
+        self.tabs.borrow_mut().insert(n.pr_key.clone(), n.tab);
         self.calls.borrow_mut().push(Call::Show(
             n.pr_key.clone(),
             n.generation,
@@ -1134,9 +1137,28 @@ fn pings_stop_once_someone_else_reviews() {
     assert!(h.notifier.take().is_empty());
 }
 
-fn mute(h: &mut Harness, until: Option<chrono::DateTime<chrono::Utc>>) {
-    h.daemon.store.db().enqueue(&Command::Mute { until }, t(0)).unwrap();
+fn mute(h: &mut Harness, scope: MuteScope, until: Option<chrono::DateTime<chrono::Utc>>) {
+    h.daemon
+        .store
+        .db()
+        .enqueue(&Command::Mute { scope, until }, t(0))
+        .unwrap();
     h.daemon.consume_commands().unwrap();
+}
+
+fn poll_both(h: &mut Harness, mine: Vec<MyPr>, to_review: Vec<ReviewRequest>) {
+    h.github.push(Ok(AccountSnapshot {
+        mine,
+        to_review,
+        ..snapshot(vec![])
+    }));
+    h.daemon.poll_account("me-work").unwrap();
+}
+
+fn sorted_keys(calls: Vec<Call>) -> Vec<String> {
+    let mut keys: Vec<String> = shown_keys(calls).into_iter().map(|(k, ..)| k).collect();
+    keys.sort();
+    keys
 }
 
 #[test]
@@ -1144,22 +1166,58 @@ fn muting_clears_the_screen_and_holds_notifications_until_unmuted() {
     let mut h = harness().bootstrapped();
     h.poll(vec![pr_with_changes(&["r1"])]);
     h.notifier.take();
-    mute(&mut h, Some(t(600)));
+    mute(&mut h, MuteScope::Everything, Some(t(600)));
     assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
-    h.github.push(Ok(AccountSnapshot {
-        mine: vec![pr_with_changes(&["r1", "r2"])],
-        to_review: vec![request("acme/web", 7)],
-        ..snapshot(vec![])
-    }));
-    h.daemon.poll_account("me-work").unwrap();
+    poll_both(
+        &mut h,
+        vec![pr_with_changes(&["r1", "r2"])],
+        vec![request("acme/web", 7)],
+    );
     h.clock.advance(Duration::minutes(20));
     h.daemon.tick().unwrap();
     assert!(h.notifier.take().is_empty());
-    mute(&mut h, None);
+    mute(&mut h, MuteScope::Everything, None);
     h.daemon.tick().unwrap();
-    let mut shown: Vec<String> = shown_keys(h.notifier.take()).into_iter().map(|(k, ..)| k).collect();
-    shown.sort();
-    assert_eq!(shown, vec!["acme/api#1".to_string(), "acme/web#7".to_string()]);
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/api#1", "acme/web#7"]);
+}
+
+#[test]
+fn muting_reviews_holds_only_review_requests_while_my_prs_keep_pinging() {
+    let mut h = harness().bootstrapped();
+    poll_both(&mut h, vec![pr_with_changes(&["r1"])], vec![request("acme/web", 7)]);
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/api#1", "acme/web#7"]);
+    assert_eq!(
+        *h.notifier.tabs.borrow(),
+        HashMap::from([("acme/api#1".into(), Tab::Mine), ("acme/web#7".into(), Tab::Review)])
+    );
+    mute(&mut h, MuteScope::Only(Tab::Review), Some(t(600)));
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/web#7".into())]);
+    poll_both(
+        &mut h,
+        vec![pr_with_changes(&["r1", "r2"])],
+        vec![request("acme/web", 7), request("acme/web", 8)],
+    );
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/api#1"]);
+    h.clock.advance(Duration::minutes(5));
+    h.daemon.tick().unwrap();
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/api#1"]);
+    mute(&mut h, MuteScope::Only(Tab::Review), None);
+    h.daemon.tick().unwrap();
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/web#7", "acme/web#8"]);
+    assert_eq!(h.notifier.tabs.borrow()["acme/web#8"], Tab::Review);
+}
+
+#[test]
+fn muting_my_prs_leaves_review_requests_pinging() {
+    let mut h = harness().bootstrapped();
+    poll_both(&mut h, vec![pr_with_changes(&["r1"])], vec![request("acme/web", 7)]);
+    h.notifier.take();
+    mute(&mut h, MuteScope::Only(Tab::Mine), Some(t(600)));
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
+    h.clock.advance(Duration::minutes(5));
+    h.daemon.tick().unwrap();
+    assert_eq!(sorted_keys(h.notifier.take()), vec!["acme/web#7"]);
+    assert_eq!(h.daemon.muted_until, HashMap::from([(Tab::Mine, t(600))]));
 }
 
 #[test]
@@ -1168,7 +1226,7 @@ fn a_mute_ends_on_its_own_and_survives_a_restart() {
     let path = dir.path().join("state.db");
     let mut h = harness_with(Store::open(&path).unwrap()).bootstrapped();
     h.poll(vec![pr_with_changes(&["r1"])]);
-    mute(&mut h, Some(t(60)));
+    mute(&mut h, MuteScope::Everything, Some(t(60)));
     h.notifier.take();
     let mut restarted = harness_with(Store::open(&path).unwrap());
     restarted.clock.advance(Duration::minutes(30));
@@ -1177,7 +1235,7 @@ fn a_mute_ends_on_its_own_and_survives_a_restart() {
     restarted.clock.advance(Duration::minutes(30));
     restarted.daemon.tick().unwrap();
     assert_eq!(shown_keys(restarted.notifier.take()).len(), 1);
-    assert!(restarted.daemon.store.db().meta("muted_until").unwrap().is_none());
+    assert!(restarted.daemon.store.db().muted_until().unwrap().is_empty());
 }
 
 #[test]
@@ -1189,12 +1247,32 @@ fn the_mute_action_on_a_notification_mutes_until_tomorrow() {
         .handle(Delivered {
             pr_key: "acme/api#1".into(),
             generation: 1,
-            response: Response::Snoozed(crate::notify::MUTE_ACTION.into()),
+            response: Response::Snoozed(mute_action(MuteScope::Everything)),
         })
         .unwrap();
     assert_eq!(h.notifier.take(), vec![Call::Remove("acme/api#1".into())]);
     let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, h.daemon.config.tomorrow_hour);
-    assert_eq!(h.daemon.muted_until, Some(tomorrow));
+    assert_eq!(
+        h.daemon.muted_until,
+        HashMap::from([(Tab::Review, tomorrow), (Tab::Mine, tomorrow)])
+    );
     let alert = h.daemon.store.db().alert("acme/api#1").unwrap();
     assert_eq!(alert.phase(t(0)), Phase::Pinging);
+}
+
+#[test]
+fn a_tabs_mute_action_on_a_notification_mutes_only_that_tab_until_tomorrow() {
+    let mut h = harness().bootstrapped();
+    poll_both(&mut h, vec![pr_with_changes(&["r1"])], vec![request("acme/web", 7)]);
+    h.notifier.take();
+    h.daemon
+        .handle(Delivered {
+            pr_key: "acme/web#7".into(),
+            generation: 1,
+            response: Response::Snoozed(mute_action(MuteScope::Only(Tab::Review))),
+        })
+        .unwrap();
+    assert_eq!(h.notifier.take(), vec![Call::Remove("acme/web#7".into())]);
+    let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, h.daemon.config.tomorrow_hour);
+    assert_eq!(h.daemon.muted_until, HashMap::from([(Tab::Review, tomorrow)]));
 }

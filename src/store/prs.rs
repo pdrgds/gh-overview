@@ -14,6 +14,8 @@ pub enum Tab {
 }
 
 impl Tab {
+    pub const ALL: [Tab; 2] = [Tab::Review, Tab::Mine];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Tab::Review => "review",

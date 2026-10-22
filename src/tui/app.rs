@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::domain::alert::{AlertState, Event, Phase, step};
 use crate::domain::reasons::describe;
 use crate::domain::snooze::SnoozeChoice;
-use crate::store::{Command, Db, PrRow, Tab};
+use crate::store::{Command, Db, MuteScope, PrRow, Tab};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Badge {
@@ -57,6 +57,7 @@ pub struct App {
     pub mine: Vec<ViewRow>,
     pub status: HeaderStatus,
     pub snoozing: bool,
+    pub muting: bool,
     pub notice: Option<String>,
     pub quit: bool,
     pub show_reviewed: bool,
@@ -69,7 +70,18 @@ pub struct App {
     remind_after_open: Duration,
     alerts: HashMap<String, AlertState>,
     predictions: HashMap<String, Prediction>,
-    mute_prediction: Option<(Option<DateTime<Utc>>, DateTime<Utc>)>,
+    mute_predictions: HashMap<Tab, (Option<DateTime<Utc>>, DateTime<Utc>)>,
+}
+
+fn set_muted(muted_until: &mut HashMap<Tab, DateTime<Utc>>, tab: Tab, until: Option<DateTime<Utc>>) {
+    match until {
+        Some(until) => {
+            muted_until.insert(tab, until);
+        }
+        None => {
+            muted_until.remove(&tab);
+        }
+    }
 }
 
 fn view_row(row: PrRow, config: &Config, now: DateTime<Utc>, badge: Badge) -> ViewRow {
@@ -182,6 +194,7 @@ impl App {
             mine: vec![],
             status: HeaderStatus::default(),
             snoozing: false,
+            muting: false,
             notice: None,
             quit: false,
             show_reviewed: false,
@@ -194,7 +207,7 @@ impl App {
             remind_after_open: config.remind_after_open(),
             alerts: HashMap::new(),
             predictions: HashMap::new(),
-            mute_prediction: None,
+            mute_predictions: HashMap::new(),
         }
     }
 
@@ -220,12 +233,11 @@ impl App {
         self.review = review;
         self.mine = mine_rows(db.prs(Tab::Mine)?, &alerts, &self.hidden, config, now);
         self.status = header_status(db, config, now)?;
-        if let Some((until, at)) = self.mute_prediction {
-            if self.status.muted_until == until || now - at >= PREDICTION_TTL {
-                self.mute_prediction = None;
-            } else {
-                self.status.muted_until = until;
-            }
+        let muted_until = &mut self.status.muted_until;
+        self.mute_predictions
+            .retain(|tab, (until, at)| muted_until.get(tab) != until.as_ref() && now - *at < PREDICTION_TTL);
+        for (tab, (until, _)) in &self.mute_predictions {
+            set_muted(muted_until, *tab, *until);
         }
         Ok(())
     }
@@ -255,6 +267,14 @@ impl App {
 
     pub fn snooze_labels(&self) -> Vec<String> {
         self.snooze.iter().map(|c| c.label(self.tomorrow_hour)).collect()
+    }
+
+    pub fn tomorrow_label(&self) -> String {
+        SnoozeChoice::Tomorrow.label(self.tomorrow_hour)
+    }
+
+    pub fn is_muted(&self, scope: MuteScope) -> bool {
+        scope.tabs().iter().all(|tab| self.status.muted_until.contains_key(tab))
     }
 
     pub fn can_snooze(&self) -> bool {
@@ -293,6 +313,9 @@ impl App {
         self.notice = None;
         if self.snoozing {
             return self.on_snooze_key(key, now);
+        }
+        if self.muting {
+            return self.on_mute_key(key, now);
         }
         let mut actions = Vec::new();
         let selected = self.selected_row().cloned();
@@ -342,17 +365,32 @@ impl App {
             }
             KeyCode::Char('r') => actions.push(Action::Enqueue(Command::Refresh)),
             KeyCode::Char('a') => self.show_reviewed = !self.show_reviewed,
-            KeyCode::Char('m') => {
-                let until = if self.status.muted_until.is_some_and(|t| t > now) {
-                    None
-                } else {
-                    Some(SnoozeChoice::Tomorrow.until(now, &Local, self.tomorrow_hour))
-                };
-                self.mute_prediction = Some((until, now));
-                self.status.muted_until = until;
-                actions.push(Action::Enqueue(Command::Mute { until }));
-            }
+            KeyCode::Char('m') => self.muting = true,
             _ => {}
+        }
+        actions
+    }
+
+    fn on_mute_key(&mut self, key: KeyEvent, now: DateTime<Utc>) -> Vec<Action> {
+        let mut actions = Vec::new();
+        if let KeyCode::Char(c) = key.code
+            && let Some(&scope) = c
+                .to_digit(10)
+                .and_then(|d| MuteScope::ALL.get((d as usize).wrapping_sub(1)))
+        {
+            let until = if self.is_muted(scope) {
+                None
+            } else {
+                Some(SnoozeChoice::Tomorrow.until(now, &Local, self.tomorrow_hour))
+            };
+            for tab in scope.tabs() {
+                self.mute_predictions.insert(tab, (until, now));
+                set_muted(&mut self.status.muted_until, tab, until);
+            }
+            actions.push(Action::Enqueue(Command::Mute { scope, until }));
+        }
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char(_)) {
+            self.muting = false;
         }
         actions
     }
@@ -792,27 +830,94 @@ mod tests {
         assert_eq!(keys(&app), vec!["acme/b#2"]);
     }
 
+    fn mute_with(app: &mut App, choice: char) -> Vec<Action> {
+        assert!(app.on_key(key(KeyCode::Char('m')), t(0)).is_empty());
+        assert!(app.muting);
+        let actions = app.on_key(key(KeyCode::Char(choice)), t(0));
+        assert!(!app.muting);
+        actions
+    }
+
     #[test]
-    fn m_mutes_until_tomorrow_at_once_and_again_unmutes() {
+    fn m_mutes_everything_until_tomorrow_at_once_and_again_unmutes() {
         let store = crate::store::Store::open_in_memory().unwrap();
         let db = store.db();
         let mut app = App::new(&config());
         app.load(&db, &config(), t(0)).unwrap();
         let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, config().tomorrow_hour);
+        let everything = |until| {
+            vec![Action::Enqueue(Command::Mute {
+                scope: MuteScope::Everything,
+                until,
+            })]
+        };
+        assert_eq!(mute_with(&mut app, '1'), everything(Some(tomorrow)));
+        app.load(&db, &config(), t(0)).unwrap();
         assert_eq!(
-            app.on_key(key(KeyCode::Char('m')), t(0)),
-            vec![Action::Enqueue(Command::Mute { until: Some(tomorrow) })]
+            app.status.muted_until,
+            HashMap::from([(Tab::Review, tomorrow), (Tab::Mine, tomorrow)])
+        );
+        for tab in Tab::ALL {
+            db.set_muted_until(tab, Some(tomorrow)).unwrap();
+        }
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(mute_with(&mut app, '1'), everything(None));
+        app.load(&db, &config(), t(0)).unwrap();
+        assert!(app.status.muted_until.is_empty());
+    }
+
+    #[test]
+    fn m_toggles_one_tab_and_everything_mutes_whatever_is_left() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let db = store.db();
+        let mut app = App::new(&config());
+        app.load(&db, &config(), t(0)).unwrap();
+        let tomorrow = SnoozeChoice::Tomorrow.until(t(0), &Local, config().tomorrow_hour);
+        let review = MuteScope::Only(Tab::Review);
+        assert_eq!(
+            mute_with(&mut app, '2'),
+            vec![Action::Enqueue(Command::Mute {
+                scope: review,
+                until: Some(tomorrow)
+            })]
         );
         app.load(&db, &config(), t(0)).unwrap();
-        assert_eq!(app.status.muted_until, Some(tomorrow));
-        db.set_meta("muted_until", &tomorrow.to_rfc3339()).unwrap();
+        assert!(app.is_muted(review));
+        assert!(!app.is_muted(MuteScope::Only(Tab::Mine)));
+        assert!(!app.is_muted(MuteScope::Everything));
+        db.set_muted_until(Tab::Review, Some(tomorrow)).unwrap();
         app.load(&db, &config(), t(0)).unwrap();
         assert_eq!(
-            app.on_key(key(KeyCode::Char('m')), t(0)),
-            vec![Action::Enqueue(Command::Mute { until: None })]
+            mute_with(&mut app, '1'),
+            vec![Action::Enqueue(Command::Mute {
+                scope: MuteScope::Everything,
+                until: Some(tomorrow)
+            })]
+        );
+        for tab in Tab::ALL {
+            db.set_muted_until(tab, Some(tomorrow)).unwrap();
+        }
+        app.load(&db, &config(), t(0)).unwrap();
+        assert_eq!(
+            mute_with(&mut app, '2'),
+            vec![Action::Enqueue(Command::Mute {
+                scope: review,
+                until: None
+            })]
         );
         app.load(&db, &config(), t(0)).unwrap();
-        assert_eq!(app.status.muted_until, None);
+        assert_eq!(app.status.muted_until, HashMap::from([(Tab::Mine, tomorrow)]));
+    }
+
+    #[test]
+    fn esc_or_another_key_closes_the_mute_popup_without_muting() {
+        let mut app = app_with_mine();
+        for code in [KeyCode::Esc, KeyCode::Char('x'), KeyCode::Char('4')] {
+            app.on_key(key(KeyCode::Char('m')), t(0));
+            assert!(app.on_key(key(code), t(0)).is_empty());
+            assert!(!app.muting);
+        }
+        assert!(app.status.muted_until.is_empty());
     }
 
     #[test]

@@ -1,0 +1,14 @@
+---
+source: src/tui/view.rs
+expression: "draw(&app, 120, 10).backend()"
+---
+" gh-overview   [1] To review (2 · 1 reviewed)   [2] My PRs (1)           🔕 reviews muted until 23:30  ● polled 12s ago " Hidden by multi-width symbols: [(74, " ")]
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+"  REPO                         #      TITLE  ┌ Mute until Tomorrow 09:00 ─┐    AGE  ALERT      ACCT       VIA           "
+"▶ acme/gateway                 412    [api] a│ 1  everything              │    10h  🔔 pinging work                     " Hidden by multi-width symbols: [(85, " ")]
+"  acme/infrastructure          77     PR 77  │ 2  to review   🔕 muted    │    10h             work       team:platform " Hidden by multi-width symbols: [(63, " ")]
+"                                             │ 3  my PRs                  │                                             "
+"                                             │ esc cancel                 │                                             "
+"                                             └────────────────────────────┘                                             "
+"────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+" enter open · s snooze · d done · a reviewed · m mute today · r refresh · q quit                                        "

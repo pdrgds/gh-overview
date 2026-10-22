@@ -10,7 +10,7 @@ use crate::domain::alert::Phase;
 use crate::domain::model::AccountSnapshot;
 use crate::domain::reasons::{describe, reasons};
 use crate::store::Db;
-use crate::tui::status::{Health, ago, header_status};
+use crate::tui::status::{Health, ago, header_status, mute_text};
 
 pub fn status_report(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result<String> {
     let mut out = String::new();
@@ -38,12 +38,8 @@ pub fn status_report(db: &Db<'_>, config: &Config, now: DateTime<Utc>) -> Result
     if let Some(degraded) = status.degraded {
         writeln!(out, "notifier: {degraded}")?;
     }
-    if let Some(until) = status.muted_until {
-        writeln!(
-            out,
-            "notifications: muted until {}",
-            until.with_timezone(&Local).format("%a %H:%M")
-        )?;
+    if let Some(text) = mute_text(&status.muted_until, "%a %H:%M") {
+        writeln!(out, "notifications: {text}")?;
     }
     for (key, state) in db.alerts()? {
         let phase = match state.phase(now) {
@@ -133,7 +129,7 @@ mod tests {
     use crate::domain::alert::AlertState;
     use crate::domain::model::{Author, ReviewRequest, ReviewState};
     use crate::domain::testkit::*;
-    use crate::store::Store;
+    use crate::store::{Store, Tab};
 
     #[test]
     fn status_lists_accounts_and_active_alerts() {
@@ -200,8 +196,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let db = store.db();
         let config = Config::with_accounts(vec!["me-work".into()]);
-        db.set_meta("muted_until", &t(60).to_rfc3339()).unwrap();
+        db.set_muted_until(Tab::Review, Some(t(60))).unwrap();
         let until = t(60).with_timezone(&Local).format("%a %H:%M").to_string();
+        let text = status_report(&db, &config, t(0)).unwrap();
+        assert!(
+            text.contains(&format!("notifications: reviews muted until {until}\n")),
+            "{text}"
+        );
+        db.set_muted_until(Tab::Mine, Some(t(60))).unwrap();
         let text = status_report(&db, &config, t(0)).unwrap();
         assert!(
             text.contains(&format!("notifications: muted until {until}\n")),

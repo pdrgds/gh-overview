@@ -2,8 +2,26 @@ pub mod bundle;
 pub mod native;
 pub mod osascript;
 
-pub const MUTE_ACTION: &str = "mute-today";
-pub const MUTE_TITLE: &str = "Mute everything today";
+use crate::store::{MuteScope, Tab};
+
+pub fn mute_action(scope: MuteScope) -> String {
+    match scope {
+        MuteScope::Everything => "mute-today".into(),
+        MuteScope::Only(tab) => format!("mute-{}-today", tab.as_str()),
+    }
+}
+
+pub fn mute_title(scope: MuteScope) -> &'static str {
+    match scope {
+        MuteScope::Everything => "Mute everything today",
+        MuteScope::Only(Tab::Review) => "Mute reviews today",
+        MuteScope::Only(Tab::Mine) => "Mute my PRs today",
+    }
+}
+
+pub fn mute_scope(action: &str) -> Option<MuteScope> {
+    MuteScope::ALL.into_iter().find(|scope| mute_action(*scope) == action)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
@@ -13,6 +31,7 @@ pub struct Notification {
     pub subtitle: String,
     pub message: String,
     pub snoozable: bool,
+    pub tab: Tab,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

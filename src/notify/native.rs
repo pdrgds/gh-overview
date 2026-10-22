@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use super::{Delivered, MUTE_TITLE, Notification, Notifier, Response};
+use super::{Delivered, Notification, Notifier, Response, mute_action, mute_title};
+use crate::store::MuteScope;
 
 const DENIED: &str =
     "notifications are off for gh-overview; allow them in System Settings → Notifications (snooze only via TUI)";
@@ -30,6 +31,7 @@ pub enum Request<'a> {
         subtitle: &'a str,
         message: &'a str,
         snoozable: bool,
+        tab: &'a str,
     },
     Remove {
         key: &'a str,
@@ -183,7 +185,7 @@ impl NativeNotifier {
         let mut command = Command::new(&self.program);
         command
             .arg(format!("--actions={}", self.actions.join(",")))
-            .arg(format!("--mute-action={MUTE_TITLE}"))
+            .args(MuteScope::ALL.map(|scope| format!("--{}={}", mute_action(scope), mute_title(scope))))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -246,6 +248,7 @@ impl Notifier for NativeNotifier {
             subtitle: &n.subtitle,
             message: &n.message,
             snoozable: n.snoozable,
+            tab: n.tab.as_str(),
         };
         if let Err(err) = self.send(&request) {
             warn!("the notifier app did not take {}: {err:#}", n.pr_key);
@@ -297,6 +300,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+    use crate::store::Tab;
 
     fn notification() -> Notification {
         Notification {
@@ -306,6 +310,7 @@ mod tests {
             subtitle: "add rate limits".into(),
             message: "alice requested changes".into(),
             snoozable: true,
+            tab: Tab::Mine,
         }
     }
 
@@ -384,10 +389,11 @@ while IFS= read -r line; do echo "$line" >> "{log}"; done"#,
             subtitle: &n.subtitle,
             message: &n.message,
             snoozable: true,
+            tab: "mine",
         };
         assert_eq!(
             serde_json::to_string(&show).unwrap(),
-            r#"{"op":"show","key":"acme/api#1","generation":2,"title":"acme/api #1","subtitle":"add rate limits","message":"alice requested changes","snoozable":true}"#
+            r#"{"op":"show","key":"acme/api#1","generation":2,"title":"acme/api #1","subtitle":"add rate limits","message":"alice requested changes","snoozable":true,"tab":"mine"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::Remove { key: "k" }).unwrap(),
@@ -430,6 +436,7 @@ while IFS= read -r line; do echo "$line" >> "{log}"; done"#,
             subtitle: &n.subtitle,
             message: &n.message,
             snoozable: n.snoozable,
+            tab: n.tab.as_str(),
         })
         .unwrap();
         for field in show.as_object().unwrap().keys().filter(|k| *k != "op") {
@@ -446,8 +453,26 @@ while IFS= read -r line; do echo "$line" >> "{log}"; done"#,
             let op = request["op"].as_str().unwrap();
             assert!(swift.contains(&format!("case \"{op}\":")), "main.swift ignores op {op}");
         }
-        assert!(swift.contains(&format!("identifier: \"{}\"", super::super::MUTE_ACTION)));
-        assert!(swift.contains("option(\"mute-action\")"));
+        let tabs = Tab::ALL.map(|tab| format!("\"{}\"", tab.as_str())).join(", ");
+        assert!(
+            swift.contains(&format!("[{tabs}].flatMap {{ tab in")),
+            "main.swift lacks a tab"
+        );
+        assert_eq!(mute_action(MuteScope::Everything), "mute-today");
+        for tab in Tab::ALL {
+            assert_eq!(
+                mute_action(MuteScope::Only(tab)),
+                format!("mute-{}-today", tab.as_str())
+            );
+        }
+        for needle in [
+            r#"["mute-\(tab)-today", "mute-today"]"#,
+            r#"identifier: "snoozable-\(tab)""#,
+            r#"identifier: "oneshot-\(tab)""#,
+            r#"categoryIdentifier = "\(kind)-\(command["tab"] as? String ?? "")""#,
+        ] {
+            assert!(swift.contains(needle), "main.swift lacks {needle}");
+        }
         for needle in [
             r#""event": "ready", "state": state"#,
             r#"state = "authorized""#,
@@ -502,7 +527,10 @@ done"#,
             .lines()
             .map(String::from)
             .collect();
-        assert_eq!(lines[0], "args:--actions=15m,1h --mute-action=Mute everything today");
+        assert_eq!(
+            lines[0],
+            "args:--actions=15m,1h --mute-today=Mute everything today --mute-review-today=Mute reviews today --mute-mine-today=Mute my PRs today"
+        );
         assert_eq!(lines[1], r#"{"op":"clear"}"#);
         assert!(lines[2].starts_with(r#"{"op":"show","key":"acme/api#1","generation":2,"#));
         assert_eq!(lines[3], r#"{"op":"remove","key":"acme/api#1"}"#);

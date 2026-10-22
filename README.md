@@ -39,7 +39,8 @@ After `brew upgrade gh-overview`, run `ghov install` again to restart the daemon
 ghov            # open the TUI
 ghov status     # daemon health, last poll per account, active alerts
 ghov mute [2h]  # mute every notification until tomorrow morning (or for a duration)
-ghov unmute
+ghov mute --only review   # mute only review requests (--only mine: only your PRs)
+ghov unmute [--only review|mine]
 ghov debug fetch --account <login>   # what the daemon sees for one account
 ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAgent and notifier app
 ```
@@ -52,11 +53,11 @@ ghov uninstall  # stop the daemon, clear its notifications, remove the LaunchAge
 | `s` | snooze the selected PR's alert |
 | `d` | done: hide the PR until new activity arrives (for a review request, until you're asked again) |
 | `a` | show or hide review requests someone else already reviewed |
-| `m` | mute every notification until tomorrow at `tomorrow_hour`, or unmute |
+| `m` | mute until tomorrow at `tomorrow_hour`: `1` everything, `2` review requests, `3` your PRs; picking one already muted unmutes it |
 | `r` | ask the daemon to poll now |
 | `q` | quit |
 
-Clicking a notification opens the PR and pauses its pings for 30 minutes; its Options menu has Snooze and **Mute everything today**.
+Clicking a notification opens the PR and pauses its pings for 30 minutes; its Options menu has Snooze, **Mute reviews today** (or **Mute my PRs today**, for activity on your PR) and **Mute everything today**.
 
 ## Configuration
 
@@ -109,7 +110,7 @@ The daemon reads the config once at startup: after editing it, run `ghov install
 - Pings stop on their own once the PR no longer needs you: threads resolved, you pushed after a changes request, or you replied.
 - New activity that needs you cancels a snooze, a pause or done, and pings at once.
 
-**Quiet time.** `m` in the TUI, `ghov mute`, or **Mute everything today** from a notification's Options menu clears the notifications on screen and shows nothing new until tomorrow at `tomorrow_hour` (`ghov mute 2h` for a set time; the header shows `🔕 muted until 09:00`). The daemon keeps tracking everything, so when the mute ends every PR that still needs you pings again at once; one-time notices from the muted period are not replayed.
+**Quiet time.** `m` in the TUI, `ghov mute`, or **Mute everything today** from a notification's Options menu clears the notifications on screen and shows nothing new until tomorrow at `tomorrow_hour` (`ghov mute 2h` for a set time; the header shows `🔕 muted until 09:00`). To quiet only one side, mute review requests or your PRs alone (`m` then `2` or `3`, `ghov mute --only review|mine`, or the notification's **Mute reviews today** / **Mute my PRs today**); the other keeps pinging, and the header says which is muted (`🔕 reviews muted until 09:00`). The daemon keeps tracking everything, so when a mute ends every PR it covered that still needs you pings again at once; one-time notices from the muted period are not replayed.
 
 **Quiet start.** Nothing already there when the daemon first sees an account notifies: neither activity on your PRs nor review requests that were already waiting. A PR that shows up later notifies only for activity since about the previous poll, not for its history.
 

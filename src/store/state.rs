@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use tracing::warn;
 
-use super::Db;
+use super::{Db, Tab};
 use crate::domain::alert::AlertState;
 
 impl Db<'_> {
@@ -127,6 +129,30 @@ impl Db<'_> {
         self.conn.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         Ok(())
     }
+
+    pub fn muted_until(&self) -> Result<HashMap<Tab, DateTime<Utc>>> {
+        let mut muted = HashMap::new();
+        for tab in Tab::ALL {
+            if let Some(until) = self
+                .meta(&muted_key(tab))?
+                .and_then(|v| DateTime::parse_from_rfc3339(&v).ok())
+            {
+                muted.insert(tab, until.with_timezone(&Utc));
+            }
+        }
+        Ok(muted)
+    }
+
+    pub fn set_muted_until(&self, tab: Tab, until: Option<DateTime<Utc>>) -> Result<()> {
+        match until {
+            Some(until) => self.set_meta(&muted_key(tab), &until.to_rfc3339()),
+            None => self.delete_meta(&muted_key(tab)),
+        }
+    }
+}
+
+fn muted_key(tab: Tab) -> String {
+    format!("muted_until:{}", tab.as_str())
 }
 
 #[cfg(test)]

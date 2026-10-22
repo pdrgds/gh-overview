@@ -18,8 +18,8 @@ use crate::domain::model::{AccountSnapshot, Author, PrBase, ReviewRequest};
 use crate::domain::reasons::{reasons, reviewed_by_others};
 use crate::domain::snooze::SnoozeChoice;
 use crate::github::client::GithubSource;
-use crate::notify::{Delivered, MUTE_ACTION, Notification, Notifier, Response};
-use crate::store::{Command, PrRow, Store, Tab};
+use crate::notify::{Delivered, Notification, Notifier, Response, mute_scope};
+use crate::store::{Command, MuteScope, PrRow, Store, Tab};
 
 pub use run::run;
 
@@ -30,16 +30,18 @@ pub struct PrInfo {
     pub number: u64,
     pub title: String,
     pub url: String,
+    pub tab: Tab,
 }
 
 impl PrInfo {
-    fn of(account: &str, b: &PrBase) -> Self {
+    fn of(account: &str, b: &PrBase, tab: Tab) -> Self {
         PrInfo {
             account: account.to_string(),
             repo: b.repo.clone(),
             number: b.number,
             title: b.title.clone(),
             url: b.url.clone(),
+            tab,
         }
     }
 }
@@ -52,6 +54,7 @@ impl From<&PrRow> for PrInfo {
             number: r.number,
             title: r.title.clone(),
             url: r.url.clone(),
+            tab: r.tab,
         }
     }
 }
@@ -77,10 +80,8 @@ pub struct Daemon {
     resync: bool,
     withheld_since: HashMap<String, DateTime<Utc>>,
     truncated: HashMap<String, Vec<String>>,
-    muted_until: Option<DateTime<Utc>>,
+    muted_until: HashMap<Tab, DateTime<Utc>>,
 }
-
-const MUTED_UNTIL: &str = "muted_until";
 
 fn pings_for(request: &ReviewRequest, identity: &Identity, notify_team: bool) -> bool {
     let author = Author {
@@ -110,13 +111,7 @@ impl Daemon {
         opener: Opener,
         config: Config,
     ) -> Self {
-        let muted_until = store
-            .db()
-            .meta(MUTED_UNTIL)
-            .ok()
-            .flatten()
-            .and_then(|v| DateTime::parse_from_rfc3339(&v).ok())
-            .map(|t| t.with_timezone(&Utc));
+        let muted_until = store.db().muted_until().unwrap_or_default();
         Daemon {
             muted_until,
             identity: config.identity(),
@@ -267,7 +262,7 @@ impl Daemon {
                     renotify,
                 );
                 db.put_alert(&key, &next)?;
-                pending.push((key, PrInfo::of(&login, &pr.base), effects));
+                pending.push((key, PrInfo::of(&login, &pr.base, Tab::Mine), effects));
             }
             for request in &snapshot.to_review {
                 let mut row = PrRow::review(&login, request);
@@ -359,7 +354,7 @@ impl Daemon {
                     renotify,
                 );
                 db.put_alert(&key, &next)?;
-                pending.push((key, PrInfo::of(&login, &request.base), effects));
+                pending.push((key, PrInfo::of(&login, &request.base, Tab::Review), effects));
             }
             if !requests_bootstrapped {
                 db.set_meta(&requests_key, &now.to_rfc3339())?;
@@ -390,8 +385,14 @@ impl Daemon {
 
     pub fn tick(&mut self) -> Result<()> {
         let now = self.clock.now();
-        if self.muted_until.is_some_and(|until| until <= now) {
-            self.set_mute(None)?;
+        let expired: Vec<Tab> = self
+            .muted_until
+            .iter()
+            .filter(|(_, until)| **until <= now)
+            .map(|(tab, _)| *tab)
+            .collect();
+        for tab in expired {
+            self.set_mute(MuteScope::Only(tab), None)?;
         }
         let renotify = self.config.renotify();
         self.absorb_notifier_reset();
@@ -426,12 +427,11 @@ impl Daemon {
                 generation: delivered.generation,
                 remind_at: now + self.config.remind_after_open(),
             },
-            Response::Snoozed(label) if label == MUTE_ACTION => {
-                let until = SnoozeChoice::Tomorrow.until(now, &Local, self.config.tomorrow_hour);
-                return self.set_mute(Some(until));
-            }
             Response::Snoozed(label) => {
                 let hour = self.config.tomorrow_hour;
+                if let Some(scope) = mute_scope(&label) {
+                    return self.set_mute(scope, Some(SnoozeChoice::Tomorrow.until(now, &Local, hour)));
+                }
                 let Some(choice) = self.snooze.iter().find(|c| c.label(hour) == label) else {
                     warn!("unknown snooze choice {label:?}");
                     return Ok(());
@@ -457,7 +457,7 @@ impl Daemon {
                     self.next_poll.clear();
                     Ok(())
                 }
-                Command::Mute { until } => self.set_mute(until),
+                Command::Mute { scope, until } => self.set_mute(scope, until),
                 Command::Ack { pr_key } => {
                     let remind_at = self.clock.now() + self.config.remind_after_open();
                     self.apply_event(&pr_key, Event::Ack { remind_at })
@@ -483,28 +483,35 @@ impl Daemon {
         Ok(())
     }
 
-    fn muted(&self, now: DateTime<Utc>) -> bool {
-        self.muted_until.is_some_and(|until| until > now)
+    fn muted(&self, tab: Tab, now: DateTime<Utc>) -> bool {
+        self.muted_until.get(&tab).is_some_and(|until| *until > now)
     }
 
-    fn set_mute(&mut self, until: Option<DateTime<Utc>>) -> Result<()> {
+    fn set_mute(&mut self, scope: MuteScope, until: Option<DateTime<Utc>>) -> Result<()> {
         let now = self.clock.now();
-        match until.filter(|t| *t > now) {
-            Some(until) => {
-                self.store.db().set_meta(MUTED_UNTIL, &until.to_rfc3339())?;
-                self.muted_until = Some(until);
-                for key in std::mem::take(&mut self.live).into_keys() {
-                    if let Err(err) = self.notifier.remove(&key) {
-                        warn!("remove {key} failed: {err:#}");
-                    }
+        for tab in scope.tabs() {
+            match until.filter(|t| *t > now) {
+                Some(until) => {
+                    self.store.db().set_muted_until(tab, Some(until))?;
+                    self.muted_until.insert(tab, until);
+                    let notifier = &mut self.notifier;
+                    self.live.retain(|key, info| {
+                        if info.tab != tab {
+                            return true;
+                        }
+                        if let Err(err) = notifier.remove(key) {
+                            warn!("remove {key} failed: {err:#}");
+                        }
+                        false
+                    });
+                    info!(tab = tab.as_str(), "notifications muted until {until}");
                 }
-                info!("notifications muted until {until}");
-            }
-            None => {
-                self.store.db().delete_meta(MUTED_UNTIL)?;
-                if self.muted_until.take().is_some() {
-                    self.resync = true;
-                    info!("notifications unmuted");
+                None => {
+                    self.store.db().set_muted_until(tab, None)?;
+                    if self.muted_until.remove(&tab).is_some() {
+                        self.resync = true;
+                        info!(tab = tab.as_str(), "notifications unmuted");
+                    }
                 }
             }
         }
@@ -550,13 +557,13 @@ impl Daemon {
                     summary,
                     snoozable,
                 } => {
-                    if self.muted(self.clock.now()) {
-                        continue;
-                    }
                     let Some(info) = self.info_for(key, info.clone()) else {
                         warn!("no PR details for {key}; notification skipped");
                         continue;
                     };
+                    if self.muted(info.tab, self.clock.now()) {
+                        continue;
+                    }
                     let notification = Notification {
                         pr_key: key.to_string(),
                         generation,
@@ -564,6 +571,7 @@ impl Daemon {
                         subtitle: info.title.clone(),
                         message: summary,
                         snoozable,
+                        tab: info.tab,
                     };
                     if let Err(err) = self.notifier.show(&notification) {
                         warn!("notify {key} failed: {err:#}");

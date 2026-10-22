@@ -6,8 +6,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use super::app::{App, Badge, ViewRow};
-use super::status::Health;
-use crate::store::Tab;
+use super::status::{Health, mute_text};
+use crate::store::{MuteScope, Tab};
 
 const HIGHLIGHT: &str = "▶ ";
 const SPACING: u16 = 1;
@@ -41,6 +41,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_footer(frame, footer, app);
     if app.snoozing {
         render_snooze(frame, body, app);
+    }
+    if app.muting {
+        render_mute(frame, body, app);
     }
 }
 
@@ -83,11 +86,8 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         tab(format!("[2] My PRs ({})", app.mine.len()), app.tab == Tab::Mine),
     ]);
     let mut right = Line::default();
-    if let Some(until) = app.status.muted_until {
-        right.push_span(Span::styled(
-            format!("🔕 muted until {}  ", until.with_timezone(&Local).format("%H:%M")),
-            Style::new().fg(Color::Yellow),
-        ));
+    if let Some(text) = mute_text(&app.status.muted_until, "%H:%M") {
+        right.push_span(Span::styled(format!("🔕 {text}  "), Style::new().fg(Color::Yellow)));
     }
     right.push_span(match &app.status.health {
         Health::Ok { polled_ago: Some(ago) } => {
@@ -252,6 +252,34 @@ fn render_snooze(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(" Snooze ")), popup);
 }
 
+fn mute_label(scope: MuteScope) -> &'static str {
+    match scope {
+        MuteScope::Everything => "everything",
+        MuteScope::Only(Tab::Review) => "to review",
+        MuteScope::Only(Tab::Mine) => "my PRs",
+    }
+}
+
+fn render_mute(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines: Vec<Line> = MuteScope::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(i, scope)| {
+            let muted = if app.is_muted(scope) { "🔕 muted" } else { "" };
+            Line::raw(format!(" {}  {:<12}{muted}", i + 1, mute_label(scope)))
+        })
+        .collect();
+    lines.push(Line::raw(" esc cancel"));
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let [_, mid, _] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(height), Constraint::Fill(1)]).areas(area);
+    let [_, popup, _] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(30), Constraint::Fill(1)]).areas(mid);
+    let title = format!(" Mute until {} ", app.tomorrow_label());
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), popup);
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -354,7 +382,7 @@ mod tests {
             },
             errors: vec![],
             degraded: None,
-            muted_until: None,
+            muted_until: HashMap::new(),
         };
         app
     }
@@ -408,32 +436,57 @@ mod tests {
             health: Health::DaemonDown,
             errors: vec!["personal: gh auth token failed (last ok 10m ago)".into()],
             degraded: Some("notifications are off for gh-overview".into()),
-            muted_until: None,
+            muted_until: HashMap::new(),
         };
         insta::assert_snapshot!(draw(&app, 100, 4).backend());
+    }
+
+    fn tonight_at(hour: u32, minute: u32) -> chrono::DateTime<chrono::Utc> {
+        t(0).with_timezone(&Local)
+            .date_naive()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    fn header(app: &App) -> String {
+        let backend = draw(app, 120, 4);
+        (0..120)
+            .map(|x| backend.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect()
     }
 
     #[test]
     fn header_shows_a_mute() {
         let mut app = needing_review_only(app());
-        app.status.muted_until = Some(
-            t(0).with_timezone(&Local)
-                .date_naive()
-                .and_hms_opt(23, 30, 0)
-                .unwrap()
-                .and_local_timezone(Local)
-                .unwrap()
-                .with_timezone(&chrono::Utc),
-        );
-        let backend = draw(&app, 120, 4);
-        let header: String = (0..120)
-            .map(|x| backend.backend().buffer()[(x, 0)].symbol().to_string())
-            .collect();
+        app.status.muted_until = Tab::ALL.into_iter().map(|tab| (tab, tonight_at(23, 30))).collect();
+        let header = header(&app);
         assert!(
-            header.contains("🔕") && header.contains("muted until 23:30"),
+            header.contains("🔕") && header.contains(" muted until 23:30") && !header.contains("reviews"),
             "{header}"
         );
         assert!(header.contains("● polled 12s ago"), "{header}");
+    }
+
+    #[test]
+    fn header_names_the_tab_a_mute_covers() {
+        let mut app = needing_review_only(app());
+        app.status.muted_until = HashMap::from([(Tab::Review, tonight_at(23, 30))]);
+        let header = header(&app);
+        assert!(
+            header.contains("🔕") && header.contains(" reviews muted until 23:30"),
+            "{header}"
+        );
+    }
+
+    #[test]
+    fn review_tab_with_mute_popup() {
+        let mut app = needing_review_only(app());
+        app.status.muted_until = HashMap::from([(Tab::Review, tonight_at(23, 30))]);
+        app.muting = true;
+        insta::assert_snapshot!(draw(&app, 120, 10).backend());
     }
 
     fn footer(app: &App) -> String {

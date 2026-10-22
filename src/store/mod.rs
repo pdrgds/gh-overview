@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use rusqlite::{Connection, TransactionBehavior};
 
-pub use commands::Command;
+pub use commands::{Command, MuteScope};
 pub use prs::{PrRow, Tab};
 
 const MIGRATIONS: &[&str] = &[include_str!("schema_v1.sql")];
